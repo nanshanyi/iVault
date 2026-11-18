@@ -114,7 +114,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .logo h1,.logo span{white-space:nowrap}
 .logo-mark{width:38px;height:38px;border-radius:11px;flex-shrink:0;
   background:linear-gradient(135deg,#00c47f,#0080ff); display:flex;align-items:center;justify-content:center;
-  box-shadow:0 4px 14px rgba(0,196,127,.35)}
+  box-shadow:0 4px 14px rgba(0,196,127,.35), inset 0 1px 0 rgba(255,255,255,.28)}
 .logo-mark svg{width:25px;height:25px}
 .logo h1{font-size:17px; font-weight:700; letter-spacing:.3px}
 .logo h1 em{font-style:normal;color:var(--green2)}
@@ -373,7 +373,16 @@ td b{color:var(--txt);font-weight:600}
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14.5 6l-6 6 6 6"/></svg>
   </button>
   <div class="logo">
-    <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none"><path fill="#fff" d="M12 2 19.6 6.35v5.35c0 5.1-3.3 8.85-7.6 10.3-4.3-1.45-7.6-5.2-7.6-10.3V6.35L12 2Z"/><path fill="#04614a" d="M12 8.4a2.3 2.3 0 1 0 0 4.6 2.3 2.3 0 0 0 0-4.6ZM10.95 12.2 10.05 16.4h3.9l-.9-4.2h-2.1Z"/></svg></div>
+    <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none">
+      <defs>
+        <linearGradient id="ivShieldFace" x1="12" y1="2.2" x2="12" y2="21.9" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#ffffff"/><stop offset="1" stop-color="#e4fff5"/>
+        </linearGradient>
+      </defs>
+      <path fill="url(#ivShieldFace)" d="M12 2.2 19.5 6.5v5.2c0 5-3.25 8.7-7.5 10.15C7.75 20.4 4.5 16.7 4.5 11.7V6.5L12 2.2Z"/>
+      <path fill="#04281e" fill-opacity=".9" d="M12 7.5a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8Z"/>
+      <path fill="#04281e" fill-opacity=".9" d="M10.8 10.9h2.4l1.05 3.7a1.6 1.6 0 0 1-1.57 1.98h-1.36a1.6 1.6 0 0 1-1.57-1.98l1.05-3.7Z"/>
+    </svg></div>
     <div><h1>i<em>Vault</em></h1><span>iPhone 备份中心</span></div>
   </div>
   <nav class="nav">
