@@ -438,22 +438,26 @@ async function deleteSnap(id) {
 }
 
 /* ---------- 设置 ---------- */
+let retDragging = false;
+
 function toggleSwitch(el) {
   el.classList.toggle('on');
+  syncTimeBox();
   saveSettings();
 }
-function segValue(segId) {
-  const on = document.querySelector('#' + segId + ' span.on');
-  return on ? on.dataset.v : null;
+function syncTimeBox() {
+  $('timeBox').classList.toggle('off', !$('swSched').classList.contains('on'));
 }
-function markSeg(segId, val) {
-  document.querySelectorAll('#' + segId + ' span').forEach(s => s.classList.toggle('on', s.dataset.v === String(val)));
+function onRetInput() {
+  const v = Math.max(1, Math.min(10, parseInt($('retRange').value, 10) || 5));
+  $('retVal').textContent = v + ' 份';
+  $('retRange').style.setProperty('--fill', ((v - 1) / 9 * 100).toFixed(1) + '%');
 }
 async function saveSettings() {
   const payload = {
     schedule_enabled: $('swSched').classList.contains('on') ? 'true' : 'false',
-    schedule_time: segValue('timeSeg') || '03:00',
-    retention: segValue('retSeg') || '20',
+    schedule_time: $('timeInput').value || '03:00',
+    retention: String(Math.max(1, Math.min(10, parseInt($('retRange').value, 10) || 5))),
     notify_webhook: $('whInput').value.trim()
   };
   try {
@@ -466,22 +470,31 @@ async function saveSettings() {
 }
 function renderSettings() {
   const s = state.settings || {};
-  $('swSched').classList.toggle('on', s.schedule_enabled === 'true' || s.schedule_enabled === '1');
-  markSeg('timeSeg', s.schedule_time || '03:00');
-  markSeg('retSeg', s.retention || '20');
-  if (s.notify_webhook) $('whInput').value = s.notify_webhook;
-  $('schedBadge').textContent = (s.schedule_enabled === 'true' || s.schedule_enabled === '1') ? '定时：每天 ' + (s.schedule_time || '03:00') : '定时：已关闭';
-  $('retBadge').textContent = '保留策略：最近 ' + (s.retention || 20) + ' 份 / 设备';
+  const on = s.schedule_enabled === 'true' || s.schedule_enabled === '1';
+  const ret = Math.max(1, Math.min(10, parseInt(s.retention, 10) || 5));
+  const time = s.schedule_time || '03:00';
+  $('swSched').classList.toggle('on', on);
+  syncTimeBox();
+  /* 每 6 秒的轮询刷新不要打断用户正在进行的输入 */
+  if (document.activeElement !== $('timeInput')) $('timeInput').value = time;
+  if (!retDragging && document.activeElement !== $('retRange')) {
+    $('retRange').value = ret;
+    onRetInput();
+  }
+  if (s.notify_webhook && document.activeElement !== $('whInput')) $('whInput').value = s.notify_webhook;
+  $('schedBadge').textContent = on ? '定时：每天 ' + time : '定时：已关闭';
+  $('retBadge').textContent = '保留策略：最近 ' + ret + ' 份 / 设备';
 }
 function wireSettings() {
-  document.querySelectorAll('#timeSeg span, #retSeg span').forEach(el => {
-    el.onclick = () => {
-      const seg = el.parentElement;
-      seg.querySelectorAll('span').forEach(s => s.classList.toggle('on', s === el));
-      saveSettings();
-    };
-  });
+  const r = $('retRange');
+  r.addEventListener('pointerdown', () => { retDragging = true; });
+  ['pointerup', 'pointercancel'].forEach(ev => r.addEventListener(ev, () => { retDragging = false; }));
+  r.addEventListener('input', onRetInput);                                   // 拖动时只更新显示
+  r.addEventListener('change', () => { retDragging = false; saveSettings(); }); // 松手才提交
+  $('timeInput').addEventListener('change', saveSettings);
   $('whInput').addEventListener('change', saveSettings);
+  onRetInput();
+  syncTimeBox();
 }
 
 /* ---------- 初始化 ---------- */

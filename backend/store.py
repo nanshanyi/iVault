@@ -141,7 +141,7 @@ def delete_snapshot(snap_id: int) -> dict | None:
 DEFAULTS = {
     "schedule_enabled": "true",
     "schedule_time": "03:00",
-    "retention": "20",
+    "retention": "5",
     "notify_webhook": "",
 }
 

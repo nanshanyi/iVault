@@ -7,6 +7,7 @@
 import asyncio
 import datetime
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -238,6 +239,20 @@ async def settings():
 @app.put("/api/settings")
 async def put_settings(body: dict):
     allowed = {"schedule_enabled", "schedule_time", "retention", "notify_webhook"}
+    # 校验并规范化：时间统一成 HH:MM，保留数限定 1–10
+    if "schedule_time" in body:
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(body["schedule_time"]).strip())
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            raise HTTPException(400, "备份时间格式应为 HH:MM（00:00–23:59）")
+        body["schedule_time"] = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
+    if "retention" in body:
+        try:
+            n = int(body["retention"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "保留快照数需为 1–10 的整数")
+        if not 1 <= n <= 10:
+            raise HTTPException(400, "保留快照数需在 1–10 之间")
+        body["retention"] = str(n)
     for k, v in body.items():
         if k in allowed:
             store.set_setting(k, str(v))

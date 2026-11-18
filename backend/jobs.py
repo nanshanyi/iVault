@@ -218,7 +218,11 @@ def cleanup_retention():
     注意：增量快照与全量共享基线目录（idevicebackup2 用同一 UDID 目录持续更新），
     磁盘内容为「最新状态」，因此这里只回收超过保留数的记录，不删物理目录。
     """
-    keep = int(store.get_setting("retention") or 20)
+    try:
+        keep = int(store.get_setting("retention") or 5)
+    except (TypeError, ValueError):
+        keep = 5
+    keep = max(1, min(10, keep))
     removed = []
     for dev in store.list_devices():
         snaps = store.list_snapshots(dev["udid"], limit=10000)
