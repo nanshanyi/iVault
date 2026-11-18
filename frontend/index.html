@@ -99,17 +99,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 /* 64 - 20 = 44，主题按钮 34 → 左右各 5 */
 .side-collapsed .side-tools{padding:4px 5px 12px;gap:0}
 /* 骑在侧栏分割线上的收起按钮 */
-/* 骑在分割线上的收起按钮：只有一块和侧栏同色的实心圆底用来遮住那条线，
-   不要描边、不要投影。箭头平时淡到 .6，hover 才变绿显形。
-   ::before 把点击热区扩到 32px，视觉仍是 20px。 */
-.side-toggle{position:absolute;top:26px;right:-10px;z-index:20;width:20px;height:20px;border-radius:50%;
-  display:flex;align-items:center;justify-content:center;cursor:pointer;
-  border:0;padding:0;color:var(--txt3);background:var(--bg);
-  transition:color .18s,background .18s}
-.side-toggle::before{content:'';position:absolute;inset:-6px;border-radius:50%}
-.side-toggle svg{width:11px;height:11px;opacity:.6;transition:transform .22s ease,opacity .18s}
-.side-toggle:hover{color:var(--green2);background:var(--card-hover)}
-.side-toggle:hover svg{opacity:1}
+/* 收/展把手：贴在分割线左侧、垂直居中，双层 chevron。
+   展开 « 表示「收进去」，收起 » 表示「放出来」；不做圆底也不跨线，
+   只靠符号本身和 hover 反馈，收起后靠到最右侧。
+   ::before 把热区补到 30px，视觉仍是 22px。 */
+.side-toggle{position:absolute;top:50%;right:6px;transform:translateY(-50%);z-index:20;
+  width:22px;height:22px;border-radius:7px;border:0;padding:0;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  background:transparent;color:var(--txt3);
+  transition:right .22s ease,color .18s,background .18s}
+.side-toggle::before{content:'';position:absolute;inset:-4px;border-radius:9px}
+.side-toggle svg{width:14px;height:14px;transition:transform .22s ease}
+.side-toggle:hover{color:var(--green2);background:var(--card)}
+.side-collapsed .side-toggle{right:0}
 .side-collapsed .side-toggle svg{transform:rotate(180deg)}
 .side-tools{display:flex;gap:9px;align-items:center;padding:4px 10px 12px;
   transition:padding .22s ease,gap .22s ease}
@@ -380,7 +382,7 @@ td b{color:var(--txt);font-weight:600}
 <!-- ============ 侧边栏 ============ -->
 <aside class="sidebar">
   <button class="side-toggle" id="sideToggle" onclick="toggleSide()" title="收起侧栏">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.8 5.5 8.3 12l6.5 6.5"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.4 5.5 12.9 12l5.5 6.5"/><path d="M11.1 5.5 5.6 12l5.5 6.5"/></svg>
   </button>
   <div class="logo">
     <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none">
