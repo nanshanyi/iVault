@@ -61,7 +61,9 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(t._h);
-  t._h = setTimeout(() => t.classList.remove('show'), 3200);
+  /* 长提示（例如撤销信任失败的原因）给足阅读时间 */
+  const dur = Math.min(9000, Math.max(3200, msg.length * 110));
+  t._h = setTimeout(() => t.classList.remove('show'), dur);
 }
 
 /* ---------- 路由 ---------- */
@@ -114,6 +116,18 @@ function devName(udid) {
 }
 
 /* ---------- 总览 ---------- */
+/* 首页主操作：无设备时是「添加设备」入口，有设备才允许直接备份 */
+function renderDashAction() {
+  const b = $('dashAction');
+  if (state.devices.length) {
+    b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>立即备份';
+    b.onclick = quickBackup;
+  } else {
+    b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8.3v7.4m-3.7-3.7h7.4"/></svg>添加设备';
+    b.onclick = openWizard;
+  }
+}
+
 function renderDashboard() {
   const devs = state.devices, snaps = state.snapshots;
   const total = devs.reduce((a, d) => a + (d.total_bytes || 0), 0);
@@ -130,11 +144,20 @@ function renderDashboard() {
   const hour = new Date().getHours();
   const greet = hour < 6 ? '夜深了' : hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好';
   $('dashHello').textContent = greet + ' · 服务已运行 ' + fmtDur(state.status.uptime_s);
+  renderDashAction();
 
   const box = $('dashDevs');
   box.innerHTML = '';
   if (!devs.length) {
-    box.innerHTML = '<div class="empty"><p>还没有已配对的设备<br>去「设备管理」用数据线完成首次配对</p></div>';
+    box.innerHTML =
+      '<div class="empty" style="border:1.5px dashed var(--stroke2);border-radius:14px;padding:34px 20px">' +
+        '<div class="big-ico" style="width:64px;height:64px;border-radius:20px;margin:0 auto;opacity:.85">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="#00e59b" stroke-width="1.6"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
+        '<p style="margin-top:16px"><b style="color:var(--txt);font-size:14px">还没有配对的设备</b><br>' +
+          '用数据线把 iPhone 插到 NAS 的 USB 口，点下面的按钮开始配对</p>' +
+        '<button class="btn primary" style="margin-top:16px" onclick="openWizard()">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>添加设备</button>' +
+      '</div>';
   }
   devs.slice(0, 4).forEach(d => {
     const score = healthScore(d);
@@ -203,10 +226,16 @@ function renderDevices() {
 }
 
 async function removeDevice(udid) {
-  if (!confirm('确定取消与「' + devName(udid) + '」的配对吗？\n已保存的备份不会被删除。')) return;
+  const d = state.devices.find(x => x.udid === udid);
+  const online = !!(d && d.online);
+  const tip = online
+    ? '设备当前已连接：会同时通知 iPhone 撤销信任，之后需要重新点「信任」。'
+    : '设备当前未连接：只能删除 NAS 上的配对证书，iPhone 里的信任会保留。\n' +
+      '想彻底撤销，请先把数据线插上再取消。';
+  if (!confirm('确定取消与「' + devName(udid) + '」的配对吗？\n\n' + tip + '\n\n已保存的备份不会被删除。')) return;
   try {
-    await api('/api/devices/' + encodeURIComponent(udid), { method: 'DELETE' });
-    toast('已取消配对');
+    const r = await api('/api/devices/' + encodeURIComponent(udid), { method: 'DELETE' });
+    toast(r.message || (r.trust_revoked ? '已解除配对并撤销信任' : '已删除 NAS 侧的配对记录'));
     refresh();
   } catch (e) { toast('操作失败：' + e.message); }
 }

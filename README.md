@@ -166,7 +166,7 @@ scripts/
 ```
 GET    /api/status                 服务状态 / 在线设备 / 磁盘剩余
 GET    /api/devices                已配对设备（含在线状态、快照统计）
-DELETE /api/devices/{udid}         取消配对
+DELETE /api/devices/{udid}         取消配对（撤销信任 + 删除本地证书，见下方说明）
 POST   /api/pair/begin             开始配对向导
 GET    /api/pair/{sid}/events      SSE：waiting → found → pairing → done/error
 POST   /api/backups                {udid} 触发备份
@@ -178,6 +178,12 @@ POST   /api/restore                {udid} 恢复最近一份成功备份
 GET/PUT /api/settings              定时、保留数、Webhook
 GET    /api/docs                   Swagger 文档
 ```
+
+> **取消配对的语义（两侧）**：设备侧靠 `idevicepair unpair` 通知 iPhone 删掉对本机的
+> 信任记录，这要求设备在线；本机侧则**无条件**删除 `lockdown/<udid>.plist` 配对证书。
+> 设备离线时只有本机侧生效，iPhone 上的信任仍会保留，接口会在 `message` 里如实说明，
+> 前端据此提示「先插上数据线再取消一次」。证书必须删除的原因有两层：留着它 NAS 仍可
+> 免信任访问手机；而且它是 `validate` 判定「已授权」的依据，不删就永远等不到信任弹窗。
 
 ---
 

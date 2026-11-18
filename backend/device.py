@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import re
+from pathlib import Path
 
 from . import config
 
@@ -119,6 +120,7 @@ def humanize_pair_error(text: str) -> str:
         ("device is locked", "设备处于锁屏状态。请解锁 iPhone 后重试。"),
         ("invalid hostid", "配对记录无效，请重新插拔数据线再试一次。"),
         ("device not found", "设备已断开。请确认数据线仍连接在 NAS 的 USB 口上。"),
+        ("no device found", "设备未连接，撤销信任需要 iPhone 在线。"),
     )
     for key, zh in table:
         if key in t:
@@ -146,9 +148,84 @@ async def pair(udid: str, timeout=60) -> tuple[bool, str, bool]:
     return False, text or f"idevicepair 退出码 {code}", _is_waiting_trust(text)
 
 
-async def unpair(udid: str) -> bool:
-    code, _ = await _run([config.BIN_IDEVICEPAIR, "-u", udid, "unpair"], timeout=15)
-    return code == 0
+def _lockdown_files(udid: str) -> tuple[list[Path], str | None]:
+    """本机 lockdown 目录下属于该设备的配对记录文件。
+
+    返回 (文件列表, 扫描失败原因)。macOS 的 /var/db/lockdown 属主是 _usbmuxd
+    且组/其他位没有 r，普通用户 iterdir 会抛 EACCES——必须区分「没有证书」和
+    「读不到目录」，否则会把没清理成功误报成清理成功。
+    """
+    d = Path(config.LOCKDOWN_DIR)
+    if not d.is_dir():
+        return [], None
+    try:
+        entries = list(d.iterdir())
+    except OSError as e:  # noqa: BLE001
+        return [], f"无法读取 {d}（{e.strerror or e}）"
+    keys = {udid.lower(), udid.replace("-", "").lower()}
+    return [
+        p for p in entries
+        if p.is_file() and p.name.split(".")[0].lower() in keys
+    ], None
+
+
+def purge_local_pairing(udid: str) -> dict:
+    """删除 NAS 侧该设备的配对证书。
+
+    返回 {"ok": 成功数, "failed": [失败说明], "scan_error": 目录不可读的原因}。
+    不删 SystemConfiguration.plist（那是本机的主机身份，删了会让所有设备失效）。
+    """
+    files, scan_error = _lockdown_files(udid)
+    ok, failed = 0, []
+    for p in files:
+        try:
+            p.unlink()
+            ok += 1
+            log.info("已删除配对证书 %s", p)
+        except OSError as e:  # noqa: BLE001
+            failed.append(f"{p.name}: {e.strerror or e}")
+            log.warning("删除配对证书失败 %s: %s", p, e)
+    return {"ok": ok, "failed": failed, "scan_error": scan_error}
+
+
+async def unpair(udid: str) -> dict:
+    """解除与 iPhone 的配对关系，返回 {"trust_revoked", "purged", "message"}。
+
+    这件事有两侧，必须分别处理：
+      1. 设备侧：idevicepair unpair 通过 lockdownd 让 iPhone 删掉对本机的信任。
+         它要求设备在线，离线时必然失败——这是协议限制，无法绕过。
+      2. 本机侧：lockdown 目录下 <udid>.plist 是 NAS 持有的配对证书，必须无条件
+         删除。只要它还在，NAS 就仍能免信任访问手机，且重新添加设备时会被
+         validate 判定为「已授权」，用户永远等不到信任弹窗。
+    """
+    code, out = await _run([config.BIN_IDEVICEPAIR, "-u", udid, "unpair"], timeout=20)
+    device_ok = code == 0
+    purge = purge_local_pairing(udid)
+    purged = purge["ok"]
+
+    if device_ok:
+        msg = "已解除配对：iPhone 上的信任记录与 NAS 的配对证书都已撤销，下次连接需要重新点「信任」。"
+    else:
+        reason = humanize_pair_error(out) or out.strip() or "设备无响应。"
+        if purge["scan_error"]:
+            head = "本机的配对证书目录读取失败，"
+        elif purged:
+            head = "已删除 NAS 上的配对证书，但"
+        else:
+            head = "本机没有该设备的配对证书文件，但"
+        msg = (
+            head + "设备没有收到撤销指令——" + reason +
+            " iPhone 里仍保留对这台 NAS 的信任，下次插线添加设备时可能不再弹窗。"
+            "要彻底撤销，请插上数据线后再取消一次，或在手机上依次进入"
+            "「设置 > 通用 > 传输或还原 iPhone > 还原 > 还原位置与隐私」。"
+        )
+        log.info("unpair 未送达设备（%s），本机清理证书 %d 个", reason, purged)
+    if purge["scan_error"]:
+        msg += "（" + purge["scan_error"] + "；容器内以 root 运行才能清理证书）"
+    elif purge["failed"]:
+        msg += "（另有 " + str(len(purge["failed"])) + " 个证书文件删除失败：" + purge["failed"][0] + "）"
+    return {"trust_revoked": device_ok, "purged": purged, "message": msg}
+    return {"trust_revoked": device_ok, "purged": purged, "message": msg}
 
 
 # ---------- 配对向导会话 ----------

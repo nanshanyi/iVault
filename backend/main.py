@@ -122,9 +122,16 @@ async def devices():
 
 @app.delete("/api/devices/{udid}")
 async def remove_device(udid: str):
-    await device.unpair(udid)
+    # 先撤销信任再删记录：unpair 需要在设备表还查得到的时候执行更有意义，
+    # 但它本身只需要 UDID，所以顺序不影响；这里保留先撤销的语义。
+    r = await device.unpair(udid)
     store.remove_device(udid)
-    return {"ok": True}
+    return {
+        "ok": True,
+        "trust_revoked": r.get("trust_revoked", False),
+        "purged": r.get("purged", 0),
+        "message": r.get("message", "已取消配对"),
+    }
 
 
 # ---------------- 配对 ----------------

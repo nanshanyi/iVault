@@ -272,6 +272,7 @@ td b{color:var(--txt);font-weight:600}
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;
   background:var(--toast-bg);border:1px solid rgba(0,196,127,.4);color:var(--green2);
   padding:12px 22px;border-radius:12px;font-size:13px;font-weight:600;transition:.3s;
+  max-width:min(560px,86vw);text-align:center;line-height:1.65;
   box-shadow:0 10px 40px rgba(0,0,0,.5);z-index:99;pointer-events:none}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
@@ -311,7 +312,7 @@ td b{color:var(--txt);font-weight:600}
 <section class="view active" id="view-dashboard">
   <div class="page-head">
     <div><h2>总览</h2><p id="dashHello">一切备份运转正常</p></div>
-    <button class="btn primary" onclick="quickBackup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>立即备份</button>
+    <button class="btn primary" id="dashAction" onclick="quickBackup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>立即备份</button>
   </div>
   <div class="stats">
     <div class="card stat"><div class="glow" style="background:var(--green)"></div>

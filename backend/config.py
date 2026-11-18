@@ -1,5 +1,6 @@
 """iVault 全局配置。"""
 import os
+import sys
 
 # 容器内固定路径（compose 已挂载持久卷）
 DATA_DIR = os.environ.get("IVAULT_DATA", "/data/meta")
@@ -8,7 +9,10 @@ DB_PATH = os.path.join(DATA_DIR, "ivault.db")
 # 配对证书目录：libimobiledevice 的配对记录由 usbmuxd 管理，
 # entrypoint 用 --config-dir 指向这里；compose 把宿主机 ${META_LOCATION}/lockdown 挂到该路径。
 # 注意：不要用环境变量去改 idevice_* 工具的证书路径，它们不认这类变量。
-LOCKDOWN_DIR = os.environ.get("IVAULT_LOCKDOWN", "/var/lib/lockdown")
+# macOS 上 Homebrew 版把证书放在 /var/db/lockdown，本地调试需要跟着走，
+# 否则「取消配对」清理不到任何文件（真机验证时会误以为已经撤干净）。
+_DEFAULT_LOCKDOWN = "/var/db/lockdown" if sys.platform == "darwin" else "/var/lib/lockdown"
+LOCKDOWN_DIR = os.environ.get("IVAULT_LOCKDOWN", _DEFAULT_LOCKDOWN)
 
 HOST = os.environ.get("IVAULT_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IVAULT_PORT", "8666"))
