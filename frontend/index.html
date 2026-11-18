@@ -91,8 +91,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .side-collapsed .logo h1,.side-collapsed .logo span,
 .side-collapsed .nav-item span,.side-collapsed .nav-badge{display:none}
 /* 底部状态只留那个会呼吸的圆点，服务是否在线仍然一眼可见 */
-.side-collapsed .side-foot #sideState,.side-collapsed .side-foot #sideOs,
-.side-collapsed .side-foot #sideVer,.side-collapsed .side-foot br{display:none}
+.side-collapsed .side-foot #sideState,.side-collapsed .side-foot #sideVer,
+.side-collapsed .side-foot br{display:none}
 /* 64 - 20(侧栏内边距) - 17(图标) = 27，左右各 13.5 → 图标在收起态正好居中且位置连续 */
 .side-collapsed .nav-item{padding:11px 13.5px}
 /* 64 - 20 = 44，主题按钮 34 → 左右各 5 */
@@ -422,7 +422,7 @@ td b{color:var(--txt);font-weight:600}
     <button class="theme-btn" id="themeBtn" title="切换深浅色模式"></button>
     <span style="font-size:11.5px;color:var(--txt3)" id="themeLabel">深色模式</span>
   </div>
-  <div class="side-foot"><span class="dot" id="sideDot"></span><span id="sideState">服务运行中</span><span id="sideOs"></span><br><span style="opacity:.6;margin-left:14px" id="sideVer">iVault</span></div>
+  <div class="side-foot"><span class="dot" id="sideDot"></span><span id="sideState">服务运行中</span><br><span style="opacity:.6;margin-left:14px" id="sideVer">iVault</span></div>
 </aside>
 
 <!-- ============ 主区 ============ -->

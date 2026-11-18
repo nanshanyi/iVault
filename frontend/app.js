@@ -34,12 +34,16 @@ async function api(path, opts) {
   }
   return r.json();
 }
+// 容量统一按 1024 进制（与后端 human_size 保持一致）。
+// 之前这里用 1000 进制，而 NAS 的目录配额是按 1024 记的：512 GiB 的配额会被
+// 显示成 549.8 GB，和后端诊断信息里的 512.0GB 对不上，看着像统计错了。
 function fmtSize(b) {
   if (b == null || isNaN(b) || b === 0) return '—';
-  if (b >= 1e12) return (b / 1e12).toFixed(2) + ' TB';
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
-  return Math.max(1, Math.round(b / 1e3)) + ' KB';
+  const K = 1024;
+  if (b >= K ** 4) return (b / K ** 4).toFixed(2) + ' TB';
+  if (b >= K ** 3) return (b / K ** 3).toFixed(1) + ' GB';
+  if (b >= K ** 2) return (b / K ** 2).toFixed(1) + ' MB';
+  return Math.max(1, Math.round(b / K)) + ' KB';
 }
 function fmtTs(ts) {
   if (!ts) return '—';
@@ -762,12 +766,11 @@ function wireSettings() {
   syncTimeBox();
 }
 
-/* 侧栏底部：服务状态 + 真实系统版本 + 版本号（都不写死） */
+/* 侧栏底部：服务状态 + 容器版本号（不写死系统名） */
 function renderSideFoot(offline) {
   const st = state.status || {};
   $('sideDot').classList.toggle('off', !!offline);
   $('sideState').textContent = offline ? '服务连接中断' : '服务运行中';
-  $('sideOs').textContent = !offline && st.os_name ? ' · ' + st.os_name : '';
   $('sideVer').textContent = 'iVault' + (st.version ? ' v' + st.version : '');
 }
 
@@ -781,7 +784,7 @@ async function refresh() {
     renderDashboard(); renderDevices(); renderHistory(); renderLibrary(); renderSettings();
     renderSideFoot(false);
     $('setPath').textContent = st.backup_dir || '—';
-    $('aboutText').textContent = 'iVault v' + st.version + (st.os_name ? ' · ' + st.os_name : '') + ' · 备份目录 ' + st.backup_dir;
+    $('aboutText').textContent = 'iVault v' + st.version + ' · 备份目录 ' + st.backup_dir;
     $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' +
       (st.active_jobs || []).length + ' 个进行中任务 · 无线通道' + (st.wifi_enabled ? '已启用' : '未启用（仅 USB）');
   } catch (e) {

@@ -59,8 +59,10 @@ logging.getLogger().addHandler(_ring)
 for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     logging.getLogger(_name).addHandler(_ring)
 
-# 版本号由镜像构建参数注入（CI 传 tag 名），本地开发回落到默认值
-VERSION = os.environ.get("IVAULT_VERSION", "0.1.0")
+# 版本号由镜像构建参数注入（CI 传 tag 名，形如 v0.3.2；本地开发回落到默认值）。
+# 前端模板自带 "v" 前缀，这里必须只保留裸版本号，否则界面会显示成 "vv0.3.2"。
+_raw_ver = os.environ.get("IVAULT_VERSION", "0.1.0").strip()
+VERSION = _raw_ver[1:] if _raw_ver[:1] in ("v", "V") else _raw_ver
 
 app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
 
