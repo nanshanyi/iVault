@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>把 iPhone / iPad 整机备份到自己的 NAS</b><br>
-  与 Finder、iTunes 同格式 · 一次配对后无线增量 · 不绑定 NAS 品牌
+  与 Finder、iTunes 同格式 · 一次配对后无线增量
 </p>
 
 <p align="center">
