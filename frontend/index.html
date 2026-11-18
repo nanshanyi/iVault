@@ -61,6 +61,7 @@
 .theme-btn:hover{background:var(--card-hover);color:var(--txt)}
 .theme-btn svg{width:16px;height:16px}
 *{margin:0;padding:0;box-sizing:border-box}
+html{scrollbar-gutter:stable}   /* 浮层锁滚动时预留滚动条宽度，避免整页横向跳动 */
 body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif;
   background:radial-gradient(1200px 600px at 80% -10%,rgba(0,196,127,.08),transparent 60%),
              radial-gradient(900px 500px at -10% 110%,rgba(59,158,255,.07),transparent 60%),
@@ -128,7 +129,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .tag-ico{width:6px;height:6px;border-radius:99px;background:currentColor}
 
 /* ===== 总览 ===== */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:22px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:16px;margin-bottom:22px}
 .stat{position:relative;overflow:hidden}
 .stat .lbl{font-size:12px;color:var(--txt3);font-weight:500;margin-bottom:10px;display:flex;align-items:center;gap:7px}
 .stat .lbl svg{width:14px;height:14px}
@@ -138,6 +139,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
   filter:blur(30px);opacity:.5}
 .dash-grid{display:grid;grid-template-columns:1.35fr 1fr;gap:16px;align-items:start}
 
+/* 设备网格：轨道宽度限制在 320–420px。用 1fr 时 2 列会撑到 520、1 列撑到 700，
+   窗口一变宽度就大幅跳变；给轨道设上限后卡片尺寸基本稳定，只增减列数 */
+#devGrid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),420px))}
 .dev-card{display:flex;align-items:center;gap:15px;padding:17px;border-radius:14px;
   background:var(--card);border:1px solid var(--stroke);cursor:pointer;transition:.18s;margin-bottom:12px}
 .dev-card:hover{background:var(--card-hover);border-color:var(--stroke2)}
@@ -315,8 +319,8 @@ td b{color:var(--txt);font-weight:600}
 
 .empty{text-align:center;padding:44px 20px;color:var(--txt3)}
 .empty p{font-size:13px;margin-top:12px;line-height:1.7}
-@media (max-width:1000px){.stats{grid-template-columns:repeat(2,1fr)}.dash-grid{grid-template-columns:1fr}
-  :root{--side-w:64px}
+@media (max-width:1080px){.dash-grid{grid-template-columns:1fr}}
+@media (max-width:1000px){:root{--side-w:64px}
   .sidebar{width:64px}.logo h1,.logo span,.nav-item span,.nav-badge,.side-foot{display:none}}
 </style>
 </head>
@@ -421,7 +425,7 @@ td b{color:var(--txt);font-weight:600}
     <button class="btn" id="devNoticeRetry" onclick="retryUnpair()">重试撤销</button>
     <button class="btn ghost" onclick="hideDevNotice()">知道了</button>
   </div>
-  <div id="devGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px"></div>
+  <div id="devGrid"></div>
 </section>
 
 <!-- 备份任务 -->
