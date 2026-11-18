@@ -106,11 +106,6 @@ function renderHeat(snaps) {
   $('heatFrom').textContent = (from.getMonth() + 1) + ' 月 ' + from.getDate() + ' 日';
 }
 
-function healthScore(d) {
-  if (!d.last_backup_at) return 45;
-  const days = (Date.now() / 1000 - d.last_backup_at) / 86400;
-  return Math.max(20, Math.round(100 - days * 4));
-}
 function devName(udid) {
   const d = state.devices.find(x => x.udid === udid);
   return d ? (d.name || d.udid.slice(-8)) : udid.slice(-8);
@@ -161,9 +156,6 @@ function renderDashboard() {
       '</div>';
   }
   devs.slice(0, 4).forEach(d => {
-    const score = healthScore(d);
-    const col = score >= 80 ? '#00c47f' : score >= 50 ? '#f5b13d' : '#ff5d6c';
-    const off = (132 * (1 - score / 100)).toFixed(0);
     const days = d.last_backup_at ? Math.floor((Date.now() / 1000 - d.last_backup_at) / 86400) : null;
     const conn = d.connection || (d.online ? 'usb' : 'offline');
     const live = conn !== 'offline';
@@ -174,9 +166,7 @@ function renderDashboard() {
           esc(d.ios_version ? 'iOS ' + d.ios_version : '') + ' · UDID ····' + esc(d.udid.slice(-4)) +
           ' · ' + (days == null ? '未备份过' : days === 0 ? '今天已备份' : days + ' 天未备份') + '</div></div>' +
         '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' + (conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线') + '</span>' +
-        '<div class="ring"><svg width="52" height="52"><circle cx="26" cy="26" r="21" fill="none" stroke="var(--ringtrack)" stroke-width="4"/>' +
-        '<circle cx="26" cy="26" r="21" fill="none" stroke="' + col + '" stroke-width="4" stroke-linecap="round" stroke-dasharray="132" stroke-dashoffset="' + off + '"/></svg>' +
-        '<div class="num">' + score + '</div></div></div>');
+        '</div>');
   });
 
   renderHeat(snaps);
@@ -199,7 +189,6 @@ function renderDevices() {
   const grid = $('devGrid');
   grid.innerHTML = '';
   state.devices.forEach(d => {
-    const score = healthScore(d);
     const job = (state.status.active_jobs || []).find(j => j.udid === d.udid);
     const conn = d.connection || (d.online ? 'usb' : 'offline');
     const live = conn !== 'offline';
@@ -217,7 +206,6 @@ function renderDevices() {
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">UDID</span><span class="num">···' + esc(d.udid.slice(-12)) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">配对时间</span><span>' + fmtTs(d.paired_at) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
-          '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">健康分</span><span style="color:var(--green2)">' + score + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">快照数 / 占用</span><span class="num">' + (d.snapshot_count || 0) + ' 份 · ' + fmtSize(d.total_bytes) + '</span></div>' +
         '</div>' +
         '<div style="padding:14px 20px;border-top:1px solid var(--stroke);display:flex;gap:9px">' +
