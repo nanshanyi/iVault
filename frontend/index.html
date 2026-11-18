@@ -187,14 +187,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .big-ico{width:74px;height:74px;border-radius:24px;display:flex;align-items:center;justify-content:center;
   background:linear-gradient(135deg,rgba(0,196,127,.15),rgba(0,128,255,.12));border:1px solid rgba(0,196,127,.3)}
 .big-ico svg{width:36px;height:36px}
-/* 设备页的操作结果提示（例如撤销信任未生效） */
-.notice{display:flex;gap:13px;align-items:flex-start;margin-bottom:18px;padding:15px 17px;border-radius:13px;
+/* 设备页的操作结果提示（例如撤销信任未生效） */.notice{display:flex;gap:13px;align-items:flex-start;margin-bottom:18px;padding:15px 17px;border-radius:13px;
   background:rgba(245,177,61,.09);border:1px solid rgba(245,177,61,.38)}
 .notice svg{width:19px;height:19px;flex:none;margin-top:2px}
 .notice div{flex:1;min-width:0}
 .notice b{font-size:13.5px;color:var(--txt);display:block;margin-bottom:5px}
 .notice p{font-size:12.5px;color:var(--txt2);line-height:1.75}
 .notice .btn{flex:none;align-self:center;font-size:12px;padding:6px 13px}
+/* 可折叠说明（如无线备份的前提），默认收起不占版面 */
+.tip{margin-bottom:18px;border:1px solid var(--stroke);border-radius:12px;background:var(--card);overflow:hidden}
+.tip summary{cursor:pointer;padding:11px 16px;font-size:12.5px;font-weight:600;color:var(--txt2);
+  list-style:none;display:flex;align-items:center;gap:9px}
+.tip summary::-webkit-details-marker{display:none}
+.tip summary::before{content:"?";width:16px;height:16px;border-radius:99px;border:1px solid var(--stroke2);
+  color:var(--txt3);font-size:10.5px;display:flex;align-items:center;justify-content:center;flex:none}
+.tip summary::after{content:"展开";margin-left:auto;font-size:11px;font-weight:500;color:var(--txt3)}
+.tip[open] summary{border-bottom:1px solid var(--stroke)}
+.tip[open] summary::after{content:"收起"}
+.tip-body{padding:15px 16px 17px;font-size:12.5px;color:var(--txt2);line-height:1.85}
+.tip-body ol{margin:0 0 11px 18px;padding:0}
+.tip-body li{margin-bottom:8px}
+.tip-body li b{color:var(--txt)}
+.tip-body p{color:var(--txt3);margin:0;line-height:1.75}
 :root[data-theme="light"] .notice{background:rgba(245,177,61,.15);border-color:rgba(206,138,24,.4)}
 .detect-ring{position:relative}.detect-ring::before,.detect-ring::after{content:"";position:absolute;inset:-14px;border-radius:28px;
   border:1.5px solid rgba(0,196,127,.4);animation:ripple 1.8s infinite}
@@ -368,6 +382,23 @@ td b{color:var(--txt);font-weight:600}
     <div><h2>设备管理</h2><p>首次配对需用数据线连接 NAS 的 USB 口，之后可无线备份</p></div>
     <button class="btn primary" onclick="openWizard()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>添加设备</button>
   </div>
+  <details class="tip">
+    <summary>无线备份需要什么？为什么我的手机没有显示 Wi-Fi</summary>
+    <div class="tip-body">
+      <ol>
+        <li><b>首次必须用数据线配对一次</b>。iPhone 不支持无线配对（只有 Apple TV 支持），
+          所以「插上 → 点信任 → 拔线」这一步省不掉。</li>
+        <li><b>要在电脑上勾一次「通过 Wi-Fi 同步」</b>。这个开关在设备侧，NAS 改不了：
+          用能识别这台 iPhone 的电脑打开访达（macOS）或 Apple Devices（Windows），
+          选中设备 → 通用 → 勾选「在 Wi-Fi 上与此 iPhone 同步」→ 应用。</li>
+        <li><b>手机与 NAS 在同一局域网</b>，且 NAS 侧用 host 网络部署，
+          否则容器收不到 mDNS 广播（默认 bridge 网络收不到）。</li>
+      </ol>
+      <p>满足后拔线，设备徽标应在几秒内从「离线」变成「Wi-Fi」。没变的话依次排查：
+        手机是否解锁、Wi-Fi 是否与 NAS 同网段、访达里的同步开关是否真的勾上了；
+        仍在排查可插线确认，插线后一切正常就说明只是无线开关的问题。</p>
+    </div>
+  </details>
   <div id="devNotice" class="notice" style="display:none">
     <svg viewBox="0 0 24 24" fill="none" stroke="#f5b13d" stroke-width="1.9"><path d="M12 8.5v5m0 3h.01"/><circle cx="12" cy="12" r="9"/></svg>
     <div><b>取消配对没有完全生效</b><p id="devNoticeText"></p></div>

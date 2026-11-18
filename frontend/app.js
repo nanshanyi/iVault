@@ -208,6 +208,10 @@ function renderDevices() {
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">快照数 / 占用</span><span class="num">' + (d.snapshot_count || 0) + ' 份 · ' + fmtSize(d.total_bytes) + '</span></div>' +
         '</div>' +
+        (live || !state.status.wifi_enabled ? '' :
+          '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--txt3);line-height:1.75">' +
+          'Wi-Fi 没有发现这台设备：确认已在电脑端勾选「在 Wi-Fi 上与此 iPhone 同步」，' +
+          '或插回数据线备份。</div>') +
         '<div style="padding:14px 20px;border-top:1px solid var(--stroke);display:flex;gap:9px">' +
           '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + d.udid + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>' +
           '<button class="btn" onclick="go(\'library\')">快照</button>' +
@@ -649,7 +653,7 @@ async function refresh() {
     $('setPath').textContent = st.backup_dir || '—';
     $('aboutText').textContent = 'iVault v' + st.version + (st.os_name ? ' · ' + st.os_name : '') + ' · 备份目录 ' + st.backup_dir;
     $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' +
-      (st.active_jobs || []).length + ' 个进行中任务 · 无线通道' + (st.wifi_enabled ? '已启用' : '未启用');
+      (st.active_jobs || []).length + ' 个进行中任务 · 无线通道' + (st.wifi_enabled ? '已启用' : '未启用（仅 USB）');
   } catch (e) {
     renderSideFoot(true);
     toast('连接后端失败：' + e.message);
