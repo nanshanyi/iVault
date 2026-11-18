@@ -66,6 +66,29 @@ function toast(msg) {
   t._h = setTimeout(() => t.classList.remove('show'), dur);
 }
 
+/* ---------- 侧栏收起 ---------- */
+/* 显式选择优先（localStorage）；没选过时按窗口宽度决定，和首屏脚本保持一致 */
+function sideShouldCollapse() {
+  const saved = localStorage.getItem('ivault-side');
+  if (saved === '1' || saved === '0') return saved === '1';
+  return window.innerWidth <= 1000;
+}
+function applySide() {
+  const collapsed = sideShouldCollapse();
+  document.documentElement.classList.toggle('side-collapsed', collapsed);
+  const b = $('sideToggle');
+  if (b) {
+    b.title = collapsed ? '展开侧栏' : '收起侧栏';
+    b.setAttribute('aria-label', b.title);
+  }
+}
+function toggleSide() {
+  const next = !sideShouldCollapse();
+  localStorage.setItem('ivault-side', next ? '1' : '0');
+  applySide();
+}
+window.addEventListener('resize', applySide);
+
 /* ---------- 路由 ---------- */
 function go(v) {
   document.querySelectorAll('.view').forEach(e => e.classList.remove('active'));
@@ -672,6 +695,13 @@ async function refresh() {
   }
 }
 renderSideFoot(true);   // 首屏在首个请求回来之前保持「未连接」的真实状态
+/* 收起后只剩图标，补 title 便于识别 */
+document.querySelectorAll('.nav-item').forEach(el => {
+  const label = el.querySelector('span');
+  if (label) el.title = label.textContent.trim();
+});
+applySide();
+
 wireSettings();
 refresh();
 setInterval(refresh, 6000);
