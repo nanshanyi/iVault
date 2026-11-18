@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="assets/logo.svg" width="96" height="96" alt="iVault">
+  <!-- ?v= 用于破除 GitHub camo 的图片缓存：相对路径 URL 不变时会一直返回旧图，
+       换图后把这个数字加一即可 -->
+  <img src="assets/logo.svg?v=2" width="96" height="96" alt="iVault">
 </p>
 
 <h1 align="center">iVault</h1>
@@ -62,20 +64,17 @@ docker compose pull && docker compose up -d --no-build
 
 ## 功能
 
-| 能力 | 状态 |
+| 能力 | 说明 |
 |---|---|
-| USB 首次配对（信任授权 + 证书持久化） | ✅ |
-| 全量 / 增量整机备份（Apple MobileSync 格式） | ✅ |
-| 实时进度环、速率、终端日志流（SSE 推送） | ✅ |
-| 快照列表、删除记录、恢复到设备 | ✅ |
-| 定时备份（每天自选时刻） | ✅ |
-| 保留策略（1–10 份，滑杆调节） | ✅ |
-| Wi-Fi 无线备份（netmuxd shim 模式） | ✅ |
-| 深浅色主题（跟随系统 / 手动 / 记忆） | ✅ |
-| Webhook 通知 | ✅ |
-| 备份内容浏览（相册 / 信息 / 联系人统计） | ⏳ 规划中 |
-| 备份加密（密码在 iPhone 侧设置） | ⏳ 规划中 |
-| 多用户权限（对接 NAS 账户体系） | ⏳ 规划中 |
+| USB 首次配对 | 信任授权 + 证书持久化，重装容器不用重配 |
+| 全量 / 增量整机备份 | Apple MobileSync 格式，目录可直接拷到 Mac 用 Finder 恢复 |
+| 实时进度 | SSE 推送进度环、速率与终端日志，断线重连不丢状态 |
+| 快照管理 | 列表、删除记录、恢复到设备 |
+| 定时备份 | 每天自选时刻，服务端调度 |
+| 保留策略 | 1–10 份，滑杆调节 |
+| Wi-Fi 无线备份 | netmuxd shim 模式，需 host 网络（见下文） |
+| Webhook 通知 | 定时任务触发时 POST JSON |
+| 深浅色主题 | 跟随系统 / 手动切换 / 记忆选择 |
 
 ## 无线备份
 
@@ -167,16 +166,35 @@ GET    /api/pair/{sid}/events      SSE：waiting → found → pairing → done 
 POST   /api/backups                {udid} 触发备份
 GET    /api/jobs/{id}/events       SSE：progress / log / done / failed
 POST   /api/jobs/{id}/cancel       取消任务
-GET    /api/snapshots              快照列表
+GET    /api/snapshots              快照列表（含 has_log / error）
+GET    /api/snapshots/{id}/log     某次任务的完整日志（事后排查）
 DELETE /api/snapshots/{id}         删除快照记录
 POST   /api/restore                {udid} 恢复最近一份成功备份
 GET/PUT /api/settings              定时、保留数、Webhook
+GET    /api/diagnostics            版本 / 系统 / 设备 / 最近告警，纯文本一键复制
 GET    /api/docs                   Swagger 文档
 ```
 
 **取消配对是两侧的事**：设备侧靠 `idevicepair unpair` 通知 iPhone 删掉信任记录，要求设备在线；本机侧则无条件删除 `lockdown/<udid>.plist`。设备离线时只有本机侧生效，iPhone 上的信任仍在保留，接口会在 `message` 里如实说明，前端据此提示「先插上线再取消一次」。证书必须删的原因有两层：留着它 NAS 仍可免信任访问手机，而且它是 `validate` 判定「已授权」的依据，不删就永远等不到信任弹窗。
 
 </details>
+
+## 出问题怎么查
+
+三处日志，覆盖三种场景：
+
+| 场景 | 看哪里 | 保留多久 |
+|---|---|---|
+| 某次备份/恢复为什么失败 | 界面「备份任务 → 历史」状态旁的**日志**按钮 | 随快照记录永久保存 |
+| 配对 / 无线通道为什么不工作 | `docker compose logs ivault`，找 `[usbmuxd]` `[netmuxd]` 前缀 | 容器日志，10MB×3 自动轮转 |
+| 说不清哪里不对 | 设置 → 关于 → **诊断信息 → 复制** | 内存里最近 200 条告警 |
+
+细节：
+
+- **任务日志落库**。`idevicebackup2` 的输出（含时间戳与完整命令行）在任务结束时写进 `snapshots.log`，只留末尾 24KB。以前这些只活在内存里，任务一结束就没了，事后只能看到一条 FAILED。
+- **容器日志一处看全**。`usbmuxd` 和 `netmuxd` 不再写 `/var/log/*.log`（容器里没有持久卷，重启即丢），而是带前缀直接进 stdout。想看 usbmuxd 的详细过程：`IVAULT_USBMUXD_VERBOSE=1`。
+- **轮询不再刷屏**。前端每 6 秒刷新会打 4 个请求，一天五万多条；`uvicorn` 的 access log 已关掉，改由中间件只记**出错、写操作、超过 1.5 秒的请求**。
+- **诊断信息**是纯文本，含版本、系统、运行时长、设备与连接方式、最近快照与失败原因、最近 200 条告警。留一份在手上，过几天回来排查也够用。
 
 ## 从源码构建
 
@@ -228,7 +246,7 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 
 ## 已知限制
 
-1. **快照共享基线目录**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，磁盘上只有「最新状态」。备份库里的历史记录是时间点标记，删记录不会立刻释放空间；真正保留多个独立版本需要每次备份后对目录做硬链接快照，在规划中。
+1. **快照共享基线目录**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，磁盘上只有「最新状态」。备份库里的历史记录是时间点标记，删记录不会立刻释放空间。
 2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在 iPhone 侧开启加密备份并牢记密码——密码不会写到 NAS 上。
 3. **无线备份的两个硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次。
 4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
@@ -246,4 +264,4 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 
 [MIT](LICENSE) © nanshanyi
 
-如果这个项目对你有用，点个 Star 就是最好的支持；跑起来之后也欢迎开 Issue 说说你的设备型号，这能帮我补齐平台兼容性清单。
+个人自用项目，代码公开只是因为可能对别人也有用。按需维护，不承诺响应时间，也不提供技术支持。正式使用前请自行评估风险——尤其是恢复功能，会覆盖设备上的现有数据。
