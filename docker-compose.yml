@@ -1,0 +1,24 @@
+services:
+  ivault:
+    build: .
+    image: ivault:local
+    container_name: ivault
+    # 访问 USB 总线是 iPhone 配对与整机备份的硬性前提
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    ports:
+      - "${IVAULT_PORT:-8666}:8666"
+    environment:
+      - TZ=Asia/Shanghai
+      - IVAULT_LOG=INFO
+    volumes:
+      # 备份库：Apple MobileSync 格式，含每台 UDID 的完整数据目录
+      - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（NAS 上的备份目录绝对路径）}:/data/backups
+      # 元数据：SQLite + 配对证书 lockdown（务必持久化，丢失需重新插线配对）
+      - ${META_LOCATION:-/volume1/ivault/data}:/data/meta
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

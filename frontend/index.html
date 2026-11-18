@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iVault · iPhone 备份中心</title>
+<style>
+:root{
+  --bg:#0b0f14; --bg2:#0f151d; --card:rgba(255,255,255,.045); --card-hover:rgba(255,255,255,.075);
+  --stroke:rgba(255,255,255,.09); --stroke2:rgba(255,255,255,.16);
+  --txt:#e8eef4; --txt2:#9fb0c0; --txt3:#64748b;
+  --green:#00c47f; --green2:#00e59b; --green-dim:rgba(0,196,127,.14);
+  --blue:#3b9eff; --amber:#f5b13d; --red:#ff5d6c; --purple:#9d7bff;
+  --track:rgba(255,255,255,.07); --heat0:rgba(255,255,255,.06);
+  --row-hover:rgba(255,255,255,.03); --row-line:rgba(255,255,255,.05);
+  --sw-off:rgba(255,255,255,.12); --sw-knob:#cfd8e3;
+  --seg-bg:rgba(255,255,255,.06); --input-bg:rgba(0,0,0,.35);
+  --side-bg:rgba(13,18,25,.7); --ringtrack:rgba(255,255,255,.08);
+  --toast-bg:#12241d; --card-shadow:none;
+  --primary-bg:rgba(0,196,127,.16); --primary-tx:#4ff0b6; --primary-bd:rgba(0,196,127,.45);
+  --primary-sh:rgba(0,196,127,.15);
+  --radius:16px; --radius-s:10px;
+  --shadow:0 8px 32px rgba(0,0,0,.45);
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+:root[data-theme="light"]{
+  --bg:#f3f6f9; --bg2:#ffffff; --card:#ffffff; --card-hover:#f7fafc;
+  --stroke:rgba(20,45,75,.1); --stroke2:rgba(20,45,75,.18);
+  --txt:#16222e; --txt2:#4d6076; --txt3:#8a99ab;
+  --green:#00a06a; --green2:#008a5c; --green-dim:rgba(0,160,106,.1);
+  --blue:#1f7ae0; --amber:#b97e00; --red:#d94352; --purple:#7c5cd6;
+  --track:rgba(20,45,75,.08); --heat0:rgba(20,45,75,.07);
+  --row-hover:rgba(20,45,75,.035); --row-line:rgba(20,45,75,.07);
+  --sw-off:rgba(20,45,75,.16); --sw-knob:#ffffff;
+  --seg-bg:rgba(20,45,75,.06); --input-bg:rgba(20,45,75,.04);
+  --side-bg:rgba(255,255,255,.85); --ringtrack:rgba(20,45,75,.1);
+  --toast-bg:#e6f7f0; --card-shadow:0 4px 18px rgba(30,60,90,.07);
+  --primary-bg:rgba(0,160,106,.12); --primary-tx:#006b44; --primary-bd:rgba(0,160,106,.4);
+  --primary-sh:rgba(0,160,106,.1);
+  --shadow:0 8px 24px rgba(30,60,90,.1);
+}
+:root[data-theme="light"] body{
+  background:radial-gradient(1200px 600px at 80% -10%,rgba(0,160,106,.08),transparent 60%),
+             radial-gradient(900px 500px at -10% 110%,rgba(31,122,224,.07),transparent 60%),
+             var(--bg);
+}
+:root[data-theme="light"] .badge.g{background:rgba(0,160,106,.12);color:#007a50}
+:root[data-theme="light"] .badge.b{background:rgba(31,122,224,.12);color:#1a6cc0}
+:root[data-theme="light"] .badge.a{background:rgba(185,126,0,.13);color:#9a6b00}
+:root[data-theme="light"] .badge.p{background:rgba(124,92,214,.12);color:#6a4cc4}
+:root[data-theme="light"] .badge.r{background:rgba(217,67,82,.12);color:#c03544}
+:root[data-theme="light"] .card,
+:root[data-theme="light"] .stat{box-shadow:var(--card-shadow)}
+:root[data-theme="light"] .term{background:#0d1420;border-color:rgba(20,45,75,.12)}
+.theme-btn{display:flex;align-items:center;justify-content:center;width:34px;height:34px;
+  border-radius:10px;border:1px solid var(--stroke);background:var(--card);cursor:pointer;
+  color:var(--txt2);transition:.18s;flex-shrink:0}
+.theme-btn:hover{background:var(--card-hover);color:var(--txt)}
+.theme-btn svg{width:16px;height:16px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif;
+  background:radial-gradient(1200px 600px at 80% -10%,rgba(0,196,127,.08),transparent 60%),
+             radial-gradient(900px 500px at -10% 110%,rgba(59,158,255,.07),transparent 60%),
+             var(--bg);
+  color:var(--txt); min-height:100vh; -webkit-font-smoothing:antialiased;}
+::selection{background:rgba(0,196,127,.3)}
+
+/* ===== 布局 ===== */
+.app{display:flex; min-height:100vh}
+.sidebar{width:232px; padding:22px 14px; border-right:1px solid var(--stroke);
+  background:var(--side-bg); backdrop-filter:blur(20px); position:sticky; top:0; height:100vh;
+  display:flex; flex-direction:column; flex-shrink:0}
+.logo{display:flex; align-items:center; gap:11px; padding:6px 10px 22px}
+.logo-mark{width:38px;height:38px;border-radius:11px;flex-shrink:0;
+  background:linear-gradient(135deg,#00c47f,#0080ff); display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 14px rgba(0,196,127,.35)}
+.logo-mark svg{width:21px;height:21px}
+.logo h1{font-size:17px; font-weight:700; letter-spacing:.3px}
+.logo h1 em{font-style:normal;color:var(--green2)}
+.logo span{display:block;font-size:10.5px;color:var(--txt3);font-weight:500;letter-spacing:.5px}
+.nav{display:flex;flex-direction:column;gap:3px;flex:1}
+.nav-item{display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:12px;cursor:pointer;
+  color:var(--txt2);font-size:13.5px;font-weight:500;transition:.18s;border:1px solid transparent;user-select:none}
+.nav-item svg{width:17px;height:17px;flex-shrink:0;opacity:.85}
+.nav-item:hover{background:var(--card);color:var(--txt)}
+.nav-item.active{background:var(--green-dim);color:var(--green2);border-color:rgba(0,196,127,.22);font-weight:600}
+.nav-badge{margin-left:auto;background:var(--green);color:#04231a;font-size:10px;font-weight:700;
+  padding:2px 7px;border-radius:99px}
+.side-foot{border-top:1px solid var(--stroke);padding:14px 10px 4px;font-size:11px;color:var(--txt3)}
+.side-foot .dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--green);
+  margin-right:7px;box-shadow:0 0 8px var(--green);animation:pulse 2.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.main{flex:1;padding:28px 34px 60px; max-width:1180px; min-width:0}
+.view{display:none;animation:fadein .3s ease}
+.view.active{display:block}
+@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:24px}
+.page-head h2{font-size:22px;font-weight:700;letter-spacing:.2px}
+.page-head p{color:var(--txt3);font-size:13px;margin-top:5px}
+
+/* ===== 组件 ===== */
+.card{background:var(--card);border:1px solid var(--stroke);border-radius:var(--radius);
+  backdrop-filter:blur(12px);padding:20px}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 18px;border-radius:11px;border:1px solid var(--stroke2);
+  background:var(--card);color:var(--txt);font-size:13px;font-weight:600;cursor:pointer;transition:.18s;user-select:none}
+.btn:hover{background:var(--card-hover);transform:translateY(-1px)}
+.btn svg{width:15px;height:15px}
+.btn.primary{background:var(--primary-bg);border:1px solid var(--primary-bd);color:var(--primary-tx);
+  font-weight:700;box-shadow:0 2px 12px var(--primary-sh)}
+.btn.primary:hover{box-shadow:0 6px 22px rgba(0,196,127,.45)}
+:root[data-theme="light"] .btn.primary{background:var(--primary-bg)}
+.btn.ghost{border:none;background:none;color:var(--txt2)}
+.btn.danger{color:var(--red);border-color:rgba(255,93,108,.35)}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none!important}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
+  padding:3px 9px;border-radius:99px}
+.badge.g{background:var(--green-dim);color:var(--green2)}
+.badge.b{background:rgba(59,158,255,.14);color:var(--blue)}
+.badge.a{background:rgba(245,177,61,.14);color:var(--amber)}
+.badge.p{background:rgba(157,123,255,.14);color:var(--purple)}
+.badge.r{background:rgba(255,93,108,.14);color:var(--red)}
+.tag-ico{width:6px;height:6px;border-radius:99px;background:currentColor}
+
+/* ===== 总览 ===== */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:22px}
+.stat{position:relative;overflow:hidden}
+.stat .lbl{font-size:12px;color:var(--txt3);font-weight:500;margin-bottom:10px;display:flex;align-items:center;gap:7px}
+.stat .lbl svg{width:14px;height:14px}
+.stat .val{font-size:26px;font-weight:700;letter-spacing:-.3px}
+.stat .sub{font-size:11.5px;color:var(--txt2);margin-top:7px}
+.stat .glow{position:absolute;top:-30px;right:-30px;width:90px;height:90px;border-radius:50%;
+  filter:blur(30px);opacity:.5}
+.dash-grid{display:grid;grid-template-columns:1.35fr 1fr;gap:16px;align-items:start}
+
+.dev-card{display:flex;align-items:center;gap:15px;padding:17px;border-radius:14px;
+  background:var(--card);border:1px solid var(--stroke);cursor:pointer;transition:.18s;margin-bottom:12px}
+.dev-card:hover{background:var(--card-hover);border-color:var(--stroke2)}
+.dev-ico{width:46px;height:46px;border-radius:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,rgba(0,196,127,.18),rgba(0,128,255,.14));border:1px solid rgba(0,196,127,.25)}
+.dev-ico svg{width:23px;height:23px}
+.dev-card .info{flex:1;min-width:0}
+.dev-card .info b{font-size:14.5px}
+.dev-card .info .meta{font-size:11.5px;color:var(--txt3);margin-top:4px}
+.ring{width:52px;height:52px;position:relative;flex-shrink:0}
+.ring svg{transform:rotate(-90deg)}
+.ring .num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:700;color:var(--green2)}
+
+.heat{display:grid;grid-template-rows:repeat(7,11px);grid-auto-flow:column;gap:3.5px;margin-top:14px}
+.heat i{width:11px;height:11px;border-radius:3px;background:var(--heat0)}
+.heat i.l1{background:rgba(0,196,127,.25)} .heat i.l2{background:rgba(0,196,127,.5)}
+.heat i.l3{background:rgba(0,196,127,.75)} .heat i.l4{background:var(--green)}
+
+.timeline{position:relative;padding-left:20px}
+.timeline::before{content:"";position:absolute;left:5px;top:6px;bottom:6px;width:1.5px;
+  background:linear-gradient(180deg,rgba(0,196,127,.5),var(--heat0))}
+.tl-item{position:relative;padding:0 0 18px}
+.tl-item:last-child{padding-bottom:2px}
+.tl-item::before{content:"";position:absolute;left:-19px;top:5px;width:9px;height:9px;border-radius:99px;
+  background:var(--bg2);border:2px solid var(--green)}
+.tl-item.ok::before{border-color:var(--green)} .tl-item.warn::before{border-color:var(--amber)}
+.tl-item .t{font-size:12.5px;font-weight:600}
+.tl-item .d{font-size:11.5px;color:var(--txt3);margin-top:3px}
+
+/* ===== 配对向导 ===== */
+.wizard{max-width:520px;margin:0 auto}
+.steps{display:flex;align-items:center;margin-bottom:28px}
+.step{flex:1;text-align:center;position:relative}
+.step .c{width:34px;height:34px;border-radius:99px;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;
+  border:2px solid var(--stroke2);font-size:13px;font-weight:700;color:var(--txt3);transition:.3s;background:var(--bg2)}
+.step .t{font-size:11.5px;color:var(--txt3);font-weight:600}
+.step.done .c{background:var(--green);border-color:var(--green);color:#04231a}
+.step.done .t{color:var(--green2)}
+.step.on .c{border-color:var(--green);color:var(--green2);box-shadow:0 0 0 5px var(--green-dim)}
+.step.on .t{color:var(--txt)}
+.step-line{position:absolute;top:17px;left:calc(-50% + 17px);right:calc(50% + 17px);height:2px;
+  background:var(--stroke2);transition:.3s}
+.step.done + .step .step-line{background:var(--green)}
+.wiz-body{min-height:190px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;gap:14px}
+.wiz-body h3{font-size:16px}
+.wiz-body p{font-size:13px;color:var(--txt2);line-height:1.7;max-width:380px}
+.big-ico{width:74px;height:74px;border-radius:24px;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,rgba(0,196,127,.15),rgba(0,128,255,.12));border:1px solid rgba(0,196,127,.3)}
+.big-ico svg{width:36px;height:36px}
+.detect-ring{position:relative}
+.detect-ring::before,.detect-ring::after{content:"";position:absolute;inset:-14px;border-radius:28px;
+  border:1.5px solid rgba(0,196,127,.4);animation:ripple 1.8s infinite}
+.detect-ring::after{animation-delay:.9s}
+@keyframes ripple{0%{transform:scale(.9);opacity:1}100%{transform:scale(1.35);opacity:0}}
+.wiz-actions{display:flex;gap:10px;justify-content:center;margin-top:24px}
+.phone-check{display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;justify-content:center}
+.phone-check span{font-size:11.5px;color:var(--txt3);border:1px dashed var(--stroke2);
+  padding:5px 11px;border-radius:99px;transition:.3s}
+.phone-check span.hit{color:var(--green2);border-color:rgba(0,196,127,.5);background:var(--green-dim)}
+
+/* ===== 任务 ===== */
+.job-live{display:flex;gap:26px;align-items:center}
+.progress-ring{width:150px;height:150px;position:relative;flex-shrink:0}
+.progress-ring svg{transform:rotate(-90deg)}
+.progress-ring .pct{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.progress-ring .pct b{font-size:26px;font-weight:700}
+.progress-ring .pct span{font-size:11px;color:var(--txt3);margin-top:2px}
+.job-stats{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:12px 20px}
+.job-stats .k{font-size:11.5px;color:var(--txt3);margin-bottom:5px}
+.job-stats .v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+.term{margin-top:18px;background:#060a0f;border:1px solid var(--stroke);border-radius:12px;
+  padding:13px 16px;font-family:var(--mono);font-size:11.5px;line-height:1.85;color:#7ee2b8;
+  height:150px;overflow-y:auto;white-space:pre-wrap}
+.term .dim{color:#4a6a5c}
+.term::-webkit-scrollbar{width:6px} .term::-webkit-scrollbar-thumb{background:var(--stroke2);border-radius:99px}
+.bar{height:6px;border-radius:99px;background:var(--track);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#00a866,#00e59b);
+  transition:width .4s;box-shadow:0 0 10px rgba(0,196,127,.5)}
+
+/* ===== 表格 ===== */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:11px;color:var(--txt3);font-weight:600;letter-spacing:.5px;
+  padding:10px 14px;border-bottom:1px solid var(--stroke);text-transform:uppercase}
+td{padding:13px 14px;border-bottom:1px solid var(--row-line);color:var(--txt2)}
+tr:hover td{background:var(--row-hover);color:var(--txt)}
+td b{color:var(--txt);font-weight:600}
+.num{font-variant-numeric:tabular-nums}
+
+/* ===== 设置 ===== */
+.set-row{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--row-line)}
+.set-row:last-child{border:none}
+.set-row .k{font-size:13.5px;font-weight:600}
+.set-row .d{font-size:11.5px;color:var(--txt3);margin-top:4px}
+.switch{width:42px;height:24px;border-radius:99px;background:var(--sw-off);position:relative;
+  cursor:pointer;transition:.25s;flex-shrink:0}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:99px;
+  background:var(--sw-knob);transition:.25s}
+.switch.on{background:var(--green)}
+.switch.on::after{left:21px;background:#fff}
+.seg{display:inline-flex;background:var(--seg-bg);border-radius:10px;padding:3px;gap:2px}
+.seg span{padding:6px 14px;font-size:12px;font-weight:600;color:var(--txt3);border-radius:8px;cursor:pointer;transition:.15s}
+.seg span.on{background:var(--green-dim);color:var(--green2)}
+.path-ipt{display:flex;align-items:center;gap:10px;background:var(--input-bg);border:1px solid var(--stroke);
+  border-radius:10px;padding:9px 14px;font-family:var(--mono);font-size:12.5px;color:var(--green2)}
+
+/* ===== toast ===== */
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;
+  background:var(--toast-bg);border:1px solid rgba(0,196,127,.4);color:var(--green2);
+  padding:12px 22px;border-radius:12px;font-size:13px;font-weight:600;transition:.3s;
+  box-shadow:0 10px 40px rgba(0,0,0,.5);z-index:99;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.empty{text-align:center;padding:44px 20px;color:var(--txt3)}
+.empty p{font-size:13px;margin-top:12px;line-height:1.7}
+@media (max-width:1000px){.stats{grid-template-columns:repeat(2,1fr)}.dash-grid{grid-template-columns:1fr}
+  .sidebar{width:64px}.logo h1,.logo span,.nav-item span,.nav-badge,.side-foot{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ============ 侧边栏 ============ -->
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3l7 4v5c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V7l7-4z" fill="#fff" opacity=".95"/><path d="M12 7.5c-1.9 0-3.4 1.5-3.4 3.4v1.7h-.4v4.6h7.6v-4.6h-.4v-1.7c0-1.9-1.5-3.4-3.4-3.4zm0 1.3c1.2 0 2.1.9 2.1 2.1v1.7h-4.2v-1.7c0-1.2.9-2.1 2.1-2.1z" fill="#04614a"/></svg></div>
+    <div><h1>i<em>Vault</em></h1><span>iPhone 备份中心</span></div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item active" data-v="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg><span>总览</span></div>
+    <div class="nav-item" data-v="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg><span>设备管理</span></div>
+    <div class="nav-item" data-v="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v6m0 0l-3-3m3 3l3-3"/><path d="M4 14v4a3 3 0 003 3h10a3 3 0 003-3v-4"/></svg><span>备份任务</span><em class="nav-badge" id="navJobBadge" style="display:none">1</em></div>
+    <div class="nav-item" data-v="library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7c0-1.7 1.3-3 3-3h10c1.7 0 3 1.3 3 3v10c0 1.7-1.3 3-3 3H7c-1.7 0-3-1.3-3-3V7z"/><path d="M8 4v16M12.5 12h4"/></svg><span>备份库</span></div>
+    <div class="nav-item" data-v="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>设置</span></div>
+  </nav>
+  <div style="display:flex;gap:9px;align-items:center;padding:4px 10px 12px">
+    <button class="theme-btn" id="themeBtn" title="切换深浅色模式"></button>
+    <span style="font-size:11.5px;color:var(--txt3)" id="themeLabel">深色模式</span>
+  </div>
+  <div class="side-foot"><span class="dot"></span>服务运行中 · UGOS 1.21<br><span style="opacity:.6;margin-left:14px">iVault v0.1.0</span></div>
+</aside>
+
+<!-- ============ 主区 ============ -->
+<main class="main">
+
+<!-- 总览 -->
+<section class="view active" id="view-dashboard">
+  <div class="page-head">
+    <div><h2>总览</h2><p id="dashHello">一切备份运转正常</p></div>
+    <button class="btn primary" onclick="quickBackup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>立即备份</button>
+  </div>
+  <div class="stats">
+    <div class="card stat"><div class="glow" style="background:var(--green)"></div>
+      <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>备份总占用</div>
+      <div class="val" id="stTotal">—</div><div class="sub" id="stTotalSub">—</div></div>
+    <div class="card stat"><div class="glow" style="background:var(--blue)"></div>
+      <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/></svg>已配对设备</div>
+      <div class="val" id="stDevices">0</div><div class="sub" id="stDevicesSub">—</div></div>
+    <div class="card stat"><div class="glow" style="background:var(--purple)"></div>
+      <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>上次备份</div>
+      <div class="val" id="stLast">—</div><div class="sub" id="stLastSub">—</div></div>
+    <div class="card stat"><div class="glow" style="background:var(--amber)"></div>
+      <div class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12A10 10 0 1112 2"/><path d="M12 7v5l3 3"/></svg>备份盘剩余</div>
+      <div class="val" id="stFree">—</div><div class="sub" id="stFreeSub">—</div></div>
+  </div>
+  <div class="dash-grid">
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <b style="font-size:14.5px">我的设备</b>
+          <button class="btn ghost" onclick="go('devices')" style="font-size:12px">管理全部 →</button>
+        </div>
+        <div id="dashDevs"></div>
+      </div>
+      <div class="card">
+        <b style="font-size:14.5px">最近 30 天备份日历</b>
+        <div class="heat" id="heat"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:14px;font-size:11px;color:var(--txt3)">
+          <span id="heatFrom">—</span>
+          <span style="display:flex;align-items:center;gap:4px">少<i class="heat" style="display:grid;grid-template-rows:none;grid-auto-flow:column;margin:0 4px"><i></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i></i>多</span>
+          <span>今天</span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <b style="font-size:14.5px">最近动态</b>
+      <div class="timeline" style="margin-top:18px" id="timeline"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 设备管理 -->
+<section class="view" id="view-devices">
+  <div class="page-head">
+    <div><h2>设备管理</h2><p>首次配对需用数据线连接 NAS 的 USB 口，之后可无线备份</p></div>
+    <button class="btn primary" onclick="openWizard()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>添加设备</button>
+  </div>
+  <div id="devGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px"></div>
+  <div class="card wizard" id="wizard" style="display:none;margin-top:20px;border-color:rgba(0,196,127,.35);box-shadow:0 0 40px rgba(0,196,127,.08)">
+    <div class="steps">
+      <div class="step on" id="st1"><div class="step-line"></div><div class="c">1</div><div class="t">连接</div></div>
+      <div class="step" id="st2"><div class="step-line"></div><div class="c">2</div><div class="t">信任</div></div>
+      <div class="step" id="st3"><div class="step-line"></div><div class="c">3</div><div class="t">配对完成</div></div>
+    </div>
+    <div class="wiz-body" id="wizBody"></div>
+    <div class="wiz-actions" id="wizActions"></div>
+  </div>
+</section>
+
+<!-- 备份任务 -->
+<section class="view" id="view-tasks">
+  <div class="page-head">
+    <div><h2>备份任务</h2><p>进度由 NAS 后端实时推送，关闭页面不影响任务执行</p></div>
+    <button class="btn primary" onclick="startBackup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14m-6-6l6 6-6 6"/></svg>开始备份</button>
+  </div>
+  <div class="card" id="liveJob" style="display:none;margin-bottom:18px;border-color:rgba(0,196,127,.3)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+      <b style="font-size:14.5px" id="jobTitle">正在备份 · …</b>
+      <button class="btn danger" onclick="cancelJob()">取消</button>
+    </div>
+    <div class="job-live">
+      <div class="progress-ring">
+        <svg width="150" height="150">
+          <circle cx="75" cy="75" r="64" fill="none" stroke="var(--ringtrack)" stroke-width="11"/>
+          <circle id="prArc" cx="75" cy="75" r="64" fill="none" stroke="url(#gr)" stroke-width="11" stroke-linecap="round" stroke-dasharray="402" stroke-dashoffset="402"/>
+          <defs><linearGradient id="gr" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00e59b"/><stop offset="1" stop-color="#00a8ff"/></linearGradient></defs>
+        </svg>
+        <div class="pct"><b id="prPct">0%</b><span id="prPhase">准备中</span></div>
+      </div>
+      <div class="job-stats">
+        <div><div class="k">完成进度</div><div class="v num" id="jDone">0% 完成</div></div>
+        <div><div class="k">实时日志</div><div class="v num" id="jSpeed">0 行</div></div>
+        <div><div class="k">当前阶段</div><div class="v" id="jPhase" style="font-size:14px">准备中</div></div>
+        <div><div class="k">已用时间</div><div class="v num" id="jElapsed">0 秒</div></div>
+      </div>
+    </div>
+    <div class="term" id="term"></div>
+  </div>
+  <div class="card" style="padding:0">
+    <div style="padding:18px 20px;display:flex;justify-content:space-between;align-items:center">
+      <b style="font-size:14.5px">任务与备份历史</b>
+      <span class="badge b" id="schedBadge">定时：—</span>
+    </div>
+    <table>
+      <thead><tr><th>设备</th><th>类型</th><th>开始时间</th><th>耗时</th><th>数据量</th><th>状态</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 备份库 -->
+<section class="view" id="view-library">
+  <div class="page-head">
+    <div><h2>备份库</h2><p>Apple MobileSync 格式 · 可被 Finder / iTunes / iMazing 直接识别与恢复</p></div>
+    <span class="badge g" id="retBadge">保留策略：—</span>
+  </div>
+  <div class="card" style="padding:0">
+    <table>
+      <thead><tr><th>快照</th><th>设备</th><th>类型</th><th>大小</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+      <tbody id="snapBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+    </table>
+    <div style="padding:14px 20px;font-size:12px;color:var(--txt3);border-top:1px solid var(--stroke)">
+      增量快照共享基线数据目录；删除记录不会立即释放磁盘空间，空间由定时任务中的保留策略统一回收
+    </div>
+  </div>
+</section>
+
+<!-- 设置 -->
+<section class="view" id="view-settings">
+  <div class="page-head"><div><h2>设置</h2><p>所有更改即时保存到 NAS</p></div></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <b style="font-size:14.5px">存储与保留</b>
+        <div class="set-row"><div><div class="k">备份存储路径</div><div class="d">备份库与配对证书均保存在此目录（容器挂载卷）</div></div>
+          <div class="path-ipt" id="setPath">—</div></div>
+        <div class="set-row"><div><div class="k">保留快照数</div><div class="d">每台设备超出数量的最旧快照记录由定时任务回收</div></div>
+          <div class="seg" id="retSeg"><span data-v="10">10 份</span><span data-v="20">20 份</span><span data-v="50">50 份</span></div></div>
+      </div>
+      <div class="card">
+        <b style="font-size:14.5px">定时计划</b>
+        <div class="set-row"><div><div class="k">每天自动备份</div><div class="d">到达设定时间时对所有在线设备触发</div></div>
+          <div class="switch" id="swSched" onclick="toggleSwitch(this)"></div></div>
+        <div class="set-row"><div><div class="k">备份时间</div><div class="d">建议避开白天使用高峰</div></div>
+          <div class="seg" id="timeSeg"><span data-v="01:00">01:00</span><span data-v="03:00">03:00</span><span data-v="23:30">23:30</span></div></div>
+      </div>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <b style="font-size:14.5px">通知</b>
+        <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">定时任务触发时 POST JSON（Bark / 企业微信机器人等）</div></div>
+          <div class="path-ipt"><input id="whInput" placeholder="https://…" style="background:none;border:none;color:var(--green2);font-family:var(--mono);font-size:12.5px;width:100%;outline:none"></div></div>
+      </div>
+      <div class="card">
+        <b style="font-size:14.5px">关于</b>
+        <div class="set-row"><div><div class="k">iVault</div><div class="d" id="aboutText">—</div></div></div>
+        <div class="set-row"><div><div class="k">连接状态</div><div class="d" id="aboutOnline">—</div></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
