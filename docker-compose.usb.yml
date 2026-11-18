@@ -1,12 +1,14 @@
-# Wi-Fi 无线备份部署（可选）
+# 纯 USB 部署（可选）
 #
-# 与 docker-compose.yml 的唯一区别是 network_mode: host ——
-# mDNS 靠局域网组播发现设备，bridge 网络收不到组播，所以无线备份必须用 host 网络。
+# 与默认 docker-compose.yml 的差别只有网络：这里用 bridge + 端口映射，
+# 不占用宿主机网络栈，适合端口冲突、或 Docker Desktop 等 host 网络行为不同的环境。
 #
-#   docker compose -f docker-compose.wifi.yml pull
-#   docker compose -f docker-compose.wifi.yml up -d --no-build
+#   docker compose -f docker-compose.usb.yml pull
+#   docker compose -f docker-compose.usb.yml up -d --no-build
 #
-# 注意：host 网络下端口映射无效，Web 端口直接由 IVAULT_PORT 决定（默认 8666）。
+# 代价：无线（Wi-Fi）备份不可用。mDNS 靠局域网组播，bridge 的独立 netns 收不到，
+# netmuxd 发现不到任何设备，所以这里把 IVAULT_WIFI 固定为 0——否则界面会显示
+# 「无线通道已启用」却永远没有无线设备。USB 备份不受影响。
 services:
   ivault:
     image: ghcr.io/nanshanyi/ivault:${IVAULT_TAG:-latest}
@@ -18,17 +20,15 @@ services:
     # 访问 USB 总线是 iPhone 配对与整机备份的硬性前提
     privileged: true
     # 必须走 volumes 的 bind mount，不能写 devices:（那是创建时的节点快照，
-    # 插拔后新节点在容器内不存在，热插拔与无线重连都会失效）
-    # 无线通道的关键：host 网络才能收到 mDNS 组播
-    network_mode: host
+    # 插拔后新节点在容器内不存在，热插拔会一直报 ENOENT）
+    ports:
+      - "${IVAULT_PORT:-8666}:8666"
     environment:
       - TZ=Asia/Shanghai
       - IVAULT_LOG=${IVAULT_LOG:-INFO}
       - IVAULT_USBMUXD_VERBOSE=${IVAULT_USBMUXD_VERBOSE:-0}
-      - IVAULT_WIFI_LOG=${IVAULT_WIFI_LOG:-warn}
-      - IVAULT_PORT=${IVAULT_PORT:-8666}
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
-      - IVAULT_WIFI=1
+      - IVAULT_WIFI=0
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（宿主机上的备份目录绝对路径）}:/data/backups

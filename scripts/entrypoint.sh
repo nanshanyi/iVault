@@ -32,8 +32,9 @@ done
 # 同时用 mDNS 发现局域网里开着「通过 Wi-Fi 同步」的已配对 iPhone。
 # 之后所有 idevice_* 工具都连这个 socket，就能同时看到 USB 与无线设备。
 #
-# 注意：mDNS 依赖局域网组播，默认 bridge 网络收不到，无线备份需用 host 网络
-# 部署（见 docker-compose.wifi.yml）。收不到也不影响 USB 备份。
+# 注意：mDNS 依赖局域网组播，bridge 网络收不到，所以默认部署用 host 网络
+# （docker-compose.yml）；纯 USB 的 bridge 版本见 docker-compose.usb.yml。
+# 收不到组播也不影响 USB 备份。
 WIFI_SOCKET=/var/run/usbmuxd-net
 if [ "${IVAULT_WIFI:-1}" != "0" ] && command -v netmuxd >/dev/null 2>&1; then
     rm -f "$WIFI_SOCKET"

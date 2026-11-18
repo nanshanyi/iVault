@@ -72,26 +72,33 @@ docker compose pull && docker compose up -d --no-build
 | 快照管理 | 列表、删除记录、恢复到设备 |
 | 定时备份 | 每天自选时刻，服务端调度 |
 | 保留策略 | 1–10 份，滑杆调节 |
-| Wi-Fi 无线备份 | netmuxd shim 模式，需 host 网络（见下文） |
+| Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
 | Webhook 通知 | 定时任务触发时 POST JSON |
 | 深浅色主题 | 跟随系统 / 手动切换 / 记忆选择 |
 
 ## 无线备份
 
-配对一次之后，不插线也能备份。
+配对一次之后，不插线也能备份。**默认部署（`docker-compose.yml`）就是 host 网络，无线开箱可用。**
 
-**三个前提**，缺一不可：
+**两个前提**，缺一不可：
 
 1. 手机与 NAS 在同一局域网（mDNS 组播可达，跨 VLAN 通常不行）
 2. iOS 侧已开启「通过 Wi-Fi 同步」——首次只能在**能识别这台手机的电脑**上用 Finder 或 Apple Devices 勾选，NAS 无法代劳
-3. 用 host 网络部署，否则容器收不到 mDNS 组播
 
 ```bash
-docker compose -f docker-compose.wifi.yml pull
-docker compose -f docker-compose.wifi.yml up -d --no-build
+docker compose pull
+docker compose up -d --no-build
 ```
 
-这个文件和默认版的唯一差别是 `network_mode: host`，代价是端口映射失效，Web 端口直接由 `IVAULT_PORT` 决定。
+默认用 `network_mode: host`：mDNS 靠局域网组播发现设备，bridge 的独立 netns 收不到（实测容器只能收到 Docker 网关 172.27.0.1 的报文，局域网里 iPhone 的广播进不来），所以无线必须 host。代价是 ports 映射失效，Web 端口直接由 `IVAULT_PORT` 决定（默认 8666）。
+
+不想要 host（端口冲突、或在 Docker Desktop 上跑）就用纯 USB 版：
+
+```bash
+docker compose -f docker-compose.usb.yml up -d --no-build
+```
+
+它用 bridge + 端口映射，并把 `IVAULT_WIFI` 固定为 0——bridge 下 netmuxd 发现不到设备，开着只会让界面显示「无线通道已启用」却没有无线设备。
 
 原理上，`usbmuxd` 只认 USB，所以容器里多跑一个 `netmuxd`（shim 模式）：USB 请求转发给 `usbmuxd`，网络设备由它自己用 mDNS 发现，对外仍是同一个 socket，上层 `idevice_*` 工具完全无感。netmuxd 起不来时入口脚本会自动回落成纯 USB，不影响原有功能。
 

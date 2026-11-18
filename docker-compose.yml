@@ -14,19 +14,23 @@ services:
     # devices: 只在容器创建时快照一份 /dev 节点，运行中插拔产生的新节点
     # （如 /dev/bus/usb/003/008）在容器内不存在，usbmuxd 重扫只会报
     # ENOENT(errno=2) → LIBUSB_ERROR_NO_DEVICE，热插拔永远失效。
-    ports:
-      - "${IVAULT_PORT:-8666}:8666"
+    # 默认走 host 网络：这是 Wi-Fi 备份的前提。mDNS 靠局域网组播发现设备，
+    # bridge 的独立 netns 收不到组播（实测容器只收得到 Docker 网关 172.27.0.1
+    # 的报文），netmuxd 永远发现不到 iPhone。
+    # host 模式下 ports 映射无效，Web 端口由 IVAULT_PORT 决定（默认 8666）。
+    # 不想要 host（端口冲突、或 Docker Desktop 之类）请改用 docker-compose.usb.yml。
+    network_mode: host
     environment:
       - TZ=Asia/Shanghai
       - IVAULT_LOG=${IVAULT_LOG:-INFO}
       # 排查用：1=usbmuxd 输出详细日志；[netmuxd] 的级别由 IVAULT_WIFI_LOG 控制
       - IVAULT_USBMUXD_VERBOSE=${IVAULT_USBMUXD_VERBOSE:-0}
       - IVAULT_WIFI_LOG=${IVAULT_WIFI_LOG:-warn}
+      - IVAULT_PORT=${IVAULT_PORT:-8666}
       # 可选：想让界面左下角显示系统版本时填（例如 "DSM 7.2"、"UGOS 1.21"、
       # "QTS 5.1"）。不填则尝试读取下面的 /host-os-release，都取不到就隐藏这段。
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
-      # 1=启动无线通道（netmuxd）；0=只用 USB。无线还需要 host 网络，
-      # 见 docker-compose.wifi.yml，否则 mDNS 收不到局域网设备。
+      # 1=启用无线通道（netmuxd，默认）；0=纯 USB。
       - IVAULT_WIFI=${IVAULT_WIFI:-1}
     volumes:
       # USB 总线：用 bind mount 才能实时看到插拔产生的设备节点（见上方说明）
