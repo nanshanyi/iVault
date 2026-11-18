@@ -20,6 +20,7 @@
   --primary-bg:rgba(0,196,127,.16); --primary-tx:#4ff0b6; --primary-bd:rgba(0,196,127,.45);
   --primary-sh:rgba(0,196,127,.15);
   --radius:16px; --radius-s:10px;
+  --side-w:232px;   /* 侧栏宽度，浮层据此在主区居中 */
   --shadow:0 8px 32px rgba(0,0,0,.45);
   --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
   --cs:dark;
@@ -163,8 +164,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .tl-item .t{font-size:12.5px;font-weight:600}
 .tl-item .d{font-size:11.5px;color:var(--txt3);margin-top:3px}
 
-/* ===== 配对向导 ===== */
-.wizard{max-width:520px;margin:0 auto}
+/* ===== 配对向导（浮层，覆盖在主区上方） ===== */
+.wiz-overlay{position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;
+  /* 左侧让出侧栏宽度，使浮层在右侧内容区里居中 */
+  padding:32px 32px 32px calc(var(--side-w) + 32px);
+  background:rgba(4,9,14,.55);backdrop-filter:blur(5px);animation:wizfade .2s ease}
+@keyframes wizfade{from{opacity:0}to{opacity:1}}
+.wizard{width:100%;max-width:520px;margin:0;position:relative;max-height:calc(100vh - 64px);overflow:auto;
+  border-color:rgba(0,196,127,.35);box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 40px rgba(0,196,127,.08);
+  animation:wizpop .24s cubic-bezier(.2,.9,.3,1.1)}
+@keyframes wizpop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+.wiz-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:9px;border:1px solid transparent;
+  background:transparent;color:var(--txt3);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.18s}
+.wiz-close svg{width:14px;height:14px}
+.wiz-close:hover{background:var(--card-hover);border-color:var(--stroke);color:var(--txt)}
+@media (max-width:1000px){.wiz-overlay{padding:20px 20px 20px calc(var(--side-w) + 20px)}}
 .steps{display:flex;align-items:center;margin-bottom:28px}
 .step{flex:1;text-align:center;position:relative}
 .step .c{width:34px;height:34px;border-radius:99px;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;
@@ -301,6 +315,7 @@ td b{color:var(--txt);font-weight:600}
 .empty{text-align:center;padding:44px 20px;color:var(--txt3)}
 .empty p{font-size:13px;margin-top:12px;line-height:1.7}
 @media (max-width:1000px){.stats{grid-template-columns:repeat(2,1fr)}.dash-grid{grid-template-columns:1fr}
+  :root{--side-w:64px}
   .sidebar{width:64px}.logo h1,.logo span,.nav-item span,.nav-badge,.side-foot{display:none}}
 </style>
 </head>
@@ -406,15 +421,6 @@ td b{color:var(--txt);font-weight:600}
     <button class="btn ghost" onclick="hideDevNotice()">知道了</button>
   </div>
   <div id="devGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px"></div>
-  <div class="card wizard" id="wizard" style="display:none;margin-top:20px;border-color:rgba(0,196,127,.35);box-shadow:0 0 40px rgba(0,196,127,.08)">
-    <div class="steps">
-      <div class="step on" id="st1"><div class="step-line"></div><div class="c">1</div><div class="t">连接</div></div>
-      <div class="step" id="st2"><div class="step-line"></div><div class="c">2</div><div class="t">信任</div></div>
-      <div class="step" id="st3"><div class="step-line"></div><div class="c">3</div><div class="t">配对完成</div></div>
-    </div>
-    <div class="wiz-body" id="wizBody"></div>
-    <div class="wiz-actions" id="wizActions"></div>
-  </div>
 </section>
 
 <!-- 备份任务 -->
@@ -520,6 +526,22 @@ td b{color:var(--txt);font-weight:600}
 </section>
 
 </main>
+</div>
+
+<!-- 配对向导：覆盖在主区上方的浮层（不参与页面布局，避免撑变卡片宽度） -->
+<div class="wiz-overlay" id="wizard" style="display:none">
+  <div class="card wizard" role="dialog" aria-modal="true" aria-label="添加设备">
+    <button class="wiz-close" onclick="closeWizard()" title="关闭">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <div class="steps">
+      <div class="step on" id="st1"><div class="step-line"></div><div class="c">1</div><div class="t">连接</div></div>
+      <div class="step" id="st2"><div class="step-line"></div><div class="c">2</div><div class="t">信任</div></div>
+      <div class="step" id="st3"><div class="step-line"></div><div class="c">3</div><div class="t">配对完成</div></div>
+    </div>
+    <div class="wiz-body" id="wizBody"></div>
+    <div class="wiz-actions" id="wizActions"></div>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 <script src="app.js"></script>

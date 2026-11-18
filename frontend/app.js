@@ -296,8 +296,9 @@ function wizBody(html, actions) {
 }
 async function openWizard() {
   go('devices');
-  $('wizard').style.display = 'block';
-  $('wizard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  $('wizard').style.display = 'flex';        // 浮层：不参与布局，不会再挤压卡片宽度
+  document.body.style.overflow = 'hidden';   // 锁住背景滚动
+  resetWizScroll();
   if (pairSource) pairSource.close();
   wizStep(1);
   wizBody(
@@ -414,7 +415,17 @@ function onPairEvent(d) {
 function closeWizard() {
   if (pairSource) { pairSource.close(); pairSource = null; }
   $('wizard').style.display = 'none';
+  document.body.style.overflow = '';
 }
+function resetWizScroll() {
+  const box = document.querySelector('#wizard .wizard');
+  if (box) box.scrollTop = 0;
+}
+/* Esc 关闭；点遮罩不关（配对进行中误触会中断会话） */
+document.addEventListener('keydown', e => {
+  const ov = $('wizard');
+  if (e.key === 'Escape' && ov && ov.style.display !== 'none') closeWizard();
+});
 
 /* ---------- 备份任务（真实 SSE） ---------- */
 function quickBackup() {
