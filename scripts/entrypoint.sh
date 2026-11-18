@@ -47,8 +47,20 @@ if [ "${IVAULT_WIFI:-1}" != "0" ] && command -v netmuxd >/dev/null 2>&1; then
     done
     # 用 pgrep 判断存活：上面是管道，$! 拿到的是 sed 的 pid，不是 netmuxd
     if [ -S "$WIFI_SOCKET" ] && pgrep -x netmuxd >/dev/null 2>&1; then
-        export USBMUXD_SOCKET_ADDRESS="$WIFI_SOCKET"
+        # 必须带 "UNIX:" 前缀，且是大写。libusbmuxd 的 connect_usbmuxd_socket()
+        # 只认两种写法：strncmp 比较的 "UNIX:<路径>"，或 "<host>:<port>"。
+        # 裸路径两个分支都不匹配，会**静默回落**到 /var/run/usbmuxd —— 客户端
+        # 于是拿到原生 usbmuxd 的设备表：USB 正常，Wi-Fi 设备永远为空，且不报
+        # 任何错。排查时极难发现，因为工具退出码一直是 0。
+        export USBMUXD_SOCKET_ADDRESS="UNIX:$WIFI_SOCKET"
         export IVAULT_WIFI=1
+        # 防回归探针：把地址指向一个不存在的 socket，客户端必须失败。若这里仍
+        # 返回 0，说明变量根本没被采纳（静默回落到了默认 socket）——那无线设备
+        # 接下来必然全不可见，且所有 idevice_* 都不会报错，事后极难定位。
+        if USBMUXD_SOCKET_ADDRESS="UNIX:/nonexistent-ivault-probe" \
+                idevice_id -l >/dev/null 2>&1; then
+            echo "⚠ USBMUXD_SOCKET_ADDRESS 未被采纳（已静默回落到 /var/run/usbmuxd），无线设备将不可见"
+        fi
         echo "netmuxd started · socket=$WIFI_SOCKET · 无线通道已启用（日志前缀 [netmuxd]）"
     else
         # 起不来就退回纯 USB，绝不因为无线把主流程搞挂

@@ -207,9 +207,36 @@ GET    /api/docs                   Swagger 文档
 |---|---|---|
 | 插线后 1~2 秒自己变在线 | 正常，看护在重启 `usbmuxd` 重扫 | 无需处理 |
 | 日志有 `[usb-watchdog] ... 重新扫描`，紧接着 `libusb couldn't open USB device ... errno=2` | compose 里用 `devices:` 挂的 USB 总线，那是**容器创建时的节点快照**，插拔后新节点在容器内不存在 | 改成 `volumes: - /dev/bus/usb:/dev/bus/usb` |
-| 拔线后手机仍在广播 mDNS，但页面显示离线 | 无线通道探活失败 | 确认手机与 NAS 同网段、62078 端口可达；用 `IVAULT_WIFI_LOG=debug` 看 `[netmuxd]` 细节 |
+| 拔线后手机仍在广播 mDNS，但页面显示离线 | 无线通道探活失败 | 见下一节「无线（Wi-Fi）设备一直不出现」 |
 
 看护由 `IVAULT_USB_WATCHDOG` 控制，默认开启；设成 `0` 会回到旧行为（容器运行中插线不识别，需要重启容器）。
+
+### 无线（Wi-Fi）设备一直不出现
+
+先分清两件事：手机**有没有广播**，和**本机客户端连的是谁**。
+
+```sh
+# 1) 手机侧：应在同一局域网内看到 _apple-mobdev2._tcp 记录（含你的 iPhone）
+dns-sd -B _apple-mobdev2._tcp local.        # macOS；Linux 用 avahi-browse -rt _apple-mobdev2._tcp
+nc -z <手机IP> 62078                        # lockdownd 端口可达
+
+# 2) 本机侧：设备列表里应能看到网络设备
+idevice_id -n
+```
+
+查看 `[netmuxd]` 日志里的 `Adding network device <UDID>`：有这一行说明发现成功，问题在客户端侧。
+
+**最常见的坑：`USBMUXD_SOCKET_ADDRESS` 少了 `UNIX:` 前缀。** `libusbmuxd` 的 `connect_usbmuxd_socket()` 只认两种写法——`UNIX:<路径>`（大写，`strncmp` 比较）和 `<host>:<port>`。裸路径 `/var/run/usbmuxd-net` 两个分支都不匹配，会**静默回落**到 `/var/run/usbmuxd`：于是所有 `idevice_*` 拿到的是原生 `usbmuxd` 的设备表，USB 一切正常、Wi-Fi 设备永远为空，而且**退出码恒为 0、不报任何错**。`entrypoint.sh` 里已按 `UNIX:$WIFI_SOCKET` 导出，并带一条防回归探针（指向不存在的 socket 若仍返回 0 就告警）。
+
+三条自查，按顺序排掉：
+
+| 检查 | 期望 | 不符合说明 |
+|---|---|---|
+| `echo $USBMUXD_SOCKET_ADDRESS` | `UNIX:/var/run/usbmuxd-net` | 缺前缀 → 客户端连错 socket |
+| `idevice_id -l`（unset 该变量） | 插线时能列出 USB 设备 | 工具链或 usbmuxd 有问题 |
+| `idevice_id -n` | 无线在线时列出 UDID | 需先看 `[netmuxd]` 是否 `Adding network device` |
+
+设备发现成功后仍需通过探活：`idevicepair -n -u <UDID> validate` 返回 0 才算在线。失败说明手机锁屏休眠、已离开局域网，或配对证书被清掉。
 
 ## 从源码构建
 

@@ -116,6 +116,17 @@ def apple_usb_count():
     return n
 
 
+def client_env(sock):
+    """构造指向指定 socket 的客户端环境变量。
+
+    libusbmuxd 的 connect_usbmuxd_socket() 只认 "UNIX:<路径>"（大写，strncmp
+    比较）或 "<host>:<port>"。裸路径会静默回落到 /var/run/usbmuxd，且不报错
+    —— 早期版本的自检就是栽在这里：以为在查 netmuxd，实际一直查的是原生
+    usbmuxd，结果永远是空，看起来像「netmuxd 没上报设备」。
+    """
+    return dict(os.environ, USBMUXD_SOCKET_ADDRESS="UNIX:" + sock)
+
+
 def listed_count():
     """usbmuxd 实际列出的设备数。
 
@@ -123,7 +134,7 @@ def listed_count():
     USBMUXD_SOCKET_ADDRESS（指向 netmuxd），那样统计会把 Wi-Fi 设备也算进来，
     「总线数 > 列出数」的判断就失真了。这里要的始终是 USB 通道的裸视图。
     """
-    env = dict(os.environ, USBMUXD_SOCKET_ADDRESS=USBMUXD_SOCKET)
+    env = client_env(USBMUXD_SOCKET)
     try:
         out = subprocess.run(["idevice_id", "-l"], stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, timeout=4, env=env).stdout
@@ -166,6 +177,11 @@ def start_netmuxd():
     except OSError:
         pass
     env = dict(os.environ, RUST_LOG=os.environ.get("IVAULT_WIFI_LOG", "warn"))
+    # netmuxd 自己也读 USBMUXD_SOCKET_ADDRESS 当上游地址（src/add_device.rs）。
+    # 本进程继承的是 "UNIX:<netmuxd 自己的 socket>"，不剔除会让它把上游指向
+    # 自己，形成自环 —— 表现为 netmuxd 活着、USB 列表也拿不到。上游一律由
+    # --upstream-usbmuxd 显式指定。
+    env.pop("USBMUXD_SOCKET_ADDRESS", None)
     cmd = ("exec netmuxd --socket-path %s --upstream-usbmuxd %s "
            "2>&1 | sed -u 's/^/[netmuxd] /'" % (WIFI_SOCKET, USBMUXD_SOCKET))
     subprocess.Popen(["/bin/sh", "-c", cmd], env=env)
@@ -291,8 +307,8 @@ def self_diagnose():
         udids = sorted(n[:-6] for n in os.listdir(LOCKDOWN) if n.endswith(".plist"))
     except OSError:
         udids = []
-    env = dict(os.environ, USBMUXD_SOCKET_ADDRESS=WIFI_SOCKET)
-    log("自检：配对记录 %r" % (udids,))
+    env = client_env(WIFI_SOCKET)
+    log("自检：socket=%r 配对记录=%r" % (env["USBMUXD_SOCKET_ADDRESS"], udids))
     for args in (["idevice_id", "-l"], ["idevice_id", "-n"]):
         try:
             r = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
