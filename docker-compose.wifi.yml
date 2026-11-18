@@ -1,0 +1,38 @@
+# Wi-Fi 无线备份部署（可选）
+#
+# 与 docker-compose.yml 的唯一区别是 network_mode: host ——
+# mDNS 靠局域网组播发现设备，bridge 网络收不到组播，所以无线备份必须用 host 网络。
+#
+#   docker compose -f docker-compose.wifi.yml pull
+#   docker compose -f docker-compose.wifi.yml up -d --no-build
+#
+# 注意：host 网络下端口映射无效，Web 端口直接由 IVAULT_PORT 决定（默认 8666）。
+services:
+  ivault:
+    image: ghcr.io/nanshanyi/ivault:${IVAULT_TAG:-latest}
+    build:
+      context: .
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
+    container_name: ivault
+    # 访问 USB 总线是 iPhone 配对与整机备份的硬性前提
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    # 无线通道的关键：host 网络才能收到 mDNS 组播
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - IVAULT_LOG=INFO
+      - IVAULT_PORT=${IVAULT_PORT:-8666}
+      - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
+      - IVAULT_WIFI=1
+    volumes:
+      - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（宿主机上的备份目录绝对路径）}:/data/backups
+      - ${META_LOCATION:-./data}:/data/meta
+      - ${META_LOCATION:-./data}/lockdown:/var/lib/lockdown
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

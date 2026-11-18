@@ -20,6 +20,9 @@ services:
       # 可选：想让界面左下角显示系统版本时填（例如 "DSM 7.2"、"UGOS 1.21"、
       # "QTS 5.1"）。不填则尝试读取下面的 /host-os-release，都取不到就隐藏这段。
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
+      # 1=启动无线通道（netmuxd）；0=只用 USB。无线还需要 host 网络，
+      # 见 docker-compose.wifi.yml，否则 mDNS 收不到局域网设备。
+      - IVAULT_WIFI=${IVAULT_WIFI:-1}
     volumes:
       # 备份库：Apple MobileSync 格式，含每台 UDID 的完整数据目录
       - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（宿主机上的备份目录绝对路径）}:/data/backups

@@ -79,3 +79,6 @@ echo "  提示：容器需要 privileged 与 /dev/bus/usb 映射（compose 已�
 echo "       若你的 NAS 界面里另有「USB 设备直通」开关，也要一并打开"
 echo "  验证工具链：docker exec ivault idevice_id -l（插线后应列出 UDID）"
 echo "  查看日志：docker compose logs -f ivault"
+echo ""
+echo "  想用 Wi-Fi 无线备份？需要用 host 网络（否则收不到 mDNS 组播）："
+echo "    docker compose -f docker-compose.wifi.yml up -d --no-build"

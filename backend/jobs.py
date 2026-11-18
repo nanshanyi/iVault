@@ -11,7 +11,7 @@ import re
 import shutil
 import subprocess
 
-from . import config, store
+from . import config, device, store
 
 log = logging.getLogger("ivault.jobs")
 
@@ -74,7 +74,8 @@ class Job:
 
         self.snap_id = store.create_snapshot(self.udid, snap_type=snap_type)
         store.touch_last_backup(self.udid)
-        args = [config.BIN_IDEVICEBACKUP2, "-u", self.udid, "backup", config.BACKUP_DIR]
+        args = [config.BIN_IDEVICEBACKUP2, *device.net_args(self.udid), "-u", self.udid,
+                "backup", config.BACKUP_DIR]
         self.add_log(f"$ {' '.join(args)}")
         try:
             self.proc = await asyncio.create_subprocess_exec(
@@ -184,7 +185,7 @@ def start_restore(udid: str, job_id: str, source_udid: str | None = None):
 
 
 async def _run_restore(job: "Job"):
-    args = [config.BIN_IDEVICEBACKUP2, "-u", job.udid, "restore",
+    args = [config.BIN_IDEVICEBACKUP2, *device.net_args(job.udid), "-u", job.udid, "restore",
             "--system", "--settings", config.BACKUP_DIR]
     job.add_log(f"$ {' '.join(args)}")
     try:

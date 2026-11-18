@@ -29,7 +29,7 @@ VERSION = os.environ.get("IVAULT_VERSION", "0.1.0")
 app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
 
 _pair_sessions: dict[str, device.PairSession] = {}
-_state = {"online_devices": [], "boot_at": time.time()}
+_state = {"online_devices": [], "transports": {}, "boot_at": time.time()}
 
 # 宿主机系统标识的候选来源（厂商无关）：
 #   /host-os-release      compose 可选挂载的宿主机 /etc/os-release
@@ -124,11 +124,19 @@ async def startup():
     log.info("iVault 启动完成，备份目录=%s", config.BACKUP_DIR)
 
 
+async def _refresh_transports() -> None:
+    """刷新在线设备与各自的连接方式（USB / 无线）。"""
+    devs = await device.scan_devices()
+    _state["online_devices"] = [d["udid"] for d in devs]
+    _state["transports"] = {d["udid"]: d["connection"] for d in devs}
+    device.set_transports(_state["transports"])   # 命令层据此决定是否加 -n
+
+
 async def _device_poller():
-    """每 3 秒刷新 USB 在线设备列表，供前端状态灯使用。"""
+    """每 3 秒刷新在线设备（USB + 无线），供状态灯与命令通道选择使用。"""
     while True:
         try:
-            _state["online_devices"] = await device.list_devices()
+            await _refresh_transports()
         except Exception as e:
             log.warning("device poller: %s", e)
         await asyncio.sleep(3)
@@ -142,6 +150,8 @@ async def status():
         "os_name": detect_os_name(),
         "uptime_s": int(time.time() - _state["boot_at"]),
         "online_devices": _state["online_devices"],
+        "transports": _state["transports"],
+        "wifi_enabled": config.WIFI_ENABLED,
         "active_jobs": jobs.active_jobs(),
         "backup_dir": config.BACKUP_DIR,
         "disk_free_bytes": disk_free,
@@ -160,10 +170,11 @@ def shutil_disk_free(path: str) -> int:
 
 @app.get("/api/devices")
 async def devices():
-    online = set(_state["online_devices"])
     out = []
     for d in store.list_devices():
-        d["online"] = d["udid"] in online
+        conn = _state["transports"].get(d["udid"])
+        d["online"] = conn is not None
+        d["connection"] = conn or "offline"      # usb / network / offline
         snaps = store.list_snapshots(d["udid"], limit=500)
         completed = [s for s in snaps if s["status"] == "COMPLETE"]
         d["snapshot_count"] = len(completed)
@@ -237,8 +248,14 @@ async def trigger_backup(body: dict):
     udid = body.get("udid")
     if not udid:
         raise HTTPException(400, "缺少 udid")
+    # 触发前再刷一次：既校验在线状态，也确保连接方式（USB / 无线）是最新的，
+    # 否则可能用错误通道去连设备
+    try:
+        await _refresh_transports()
+    except Exception as e:  # noqa: BLE001
+        log.warning("触发前刷新设备失败：%s", e)
     if udid not in _state["online_devices"]:
-        raise HTTPException(409, "设备当前不在线（需插线或 Wi-Fi 可达）")
+        raise HTTPException(409, "设备当前不在线（需插线，或确保 Wi-Fi 可达且已开启同步）")
     if any(j["udid"] == udid for j in jobs.active_jobs()):
         raise HTTPException(409, "该设备已有进行中的任务")
     job = jobs.start_backup(udid, job_id=uuid.uuid4().hex)

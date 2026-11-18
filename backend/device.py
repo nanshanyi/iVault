@@ -40,17 +40,76 @@ async def _run(args: list[str], timeout=30) -> tuple[int, str]:
         return -1, f"timeout: {' '.join(args)}"
 
 
-async def list_devices() -> list[str]:
-    """USB 已连接的设备 UDID 列表（-l 不含网络设备，-n 才是）。"""
+# ---------- 连接方式（USB / 无线） ----------
+# 轮询时写入，命令层据此决定是否给 idevice_* 加 -n（走网络通道）。
+# 同一个 UDID 同时插线又开着 Wi-Fi 时以 USB 为准：更快、更稳。
+_transports: dict[str, str] = {}
+
+TRANSPORT_USB = "usb"
+TRANSPORT_NET = "network"
+
+
+def set_transports(mapping: dict[str, str]) -> None:
+    _transports.clear()
+    _transports.update(mapping)
+
+
+def get_transport(udid: str) -> str:
+    return _transports.get(udid, TRANSPORT_USB)
+
+
+def net_args(udid: str) -> list[str]:
+    """网络设备必须显式 -n：否则工具会在 USB 总线上找不到它。"""
+    return ["-n"] if get_transport(udid) == TRANSPORT_NET else []
+
+
+async def scan_devices() -> list[dict]:
+    """扫描 USB + 网络设备，返回 [{"udid", "connection"}]。
+
+    -l 列出 USB 直连设备；-n 列出经 mDNS 发现、且已开启 Wi-Fi 同步的设备
+    （需要 netmuxd 在跑，见 scripts/entrypoint.sh）。先扫 USB，重复的以 USB 为准。
+
+    网络设备必须再探活一次：mDNS 会留下已关机 / 已离开局域网的失效条目，
+    直接当成在线会出现「显示 Wi-Fi 在线但备份立刻 Mux error」的假状态。
+    """
+    usb: list[str] = []
     code, out = await _run([config.BIN_IDEVICE_ID, "-l"])
-    if code != 0:
-        return []
-    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if code == 0:
+        usb = [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+    code, out = await _run([config.BIN_IDEVICE_ID, "-n"])
+    net_candidates = [ln.strip() for ln in out.splitlines() if ln.strip()] if code == 0 else []
+    net_candidates = [u for u in net_candidates if u not in usb]
+
+    alive = await asyncio.gather(*(_net_alive(u) for u in net_candidates)) \
+        if net_candidates else []
+
+    result = [{"udid": u, "connection": TRANSPORT_USB} for u in usb]
+    result += [{"udid": u, "connection": TRANSPORT_NET}
+               for u, ok in zip(net_candidates, alive) if ok]
+    return result
+
+
+async def _net_alive(udid: str, timeout: float = 5.0) -> bool:
+    """无线设备探活。
+
+    用 validate 而不是 ideviceinfo：-q 查未知名域时 ideviceinfo 会打 WARNING 却
+    依旧返回 0，拿它当探针会把睡着的设备误判成在线；validate 必须真正连上
+    lockdownd 才会成功。顺带说明——能通过 validate 也就意味着这台主机已经
+    配对过它，无线通道本来就只服务已配对设备。
+    """
+    code, _ = await _run([config.BIN_IDEVICEPAIR, "-n", "-u", udid, "validate"], timeout=timeout)
+    return code == 0
+
+
+async def list_devices() -> list[str]:
+    """已连接设备的 UDID 列表（含 USB 与无线）。"""
+    return [d["udid"] for d in await scan_devices()]
 
 
 async def device_info(udid: str) -> dict:
     code, out = await _run(
-        [config.BIN_IDEVICE_INFO, "-u", udid, "-q", "com.apple.mobile.device"],
+        [config.BIN_IDEVICE_INFO, *net_args(udid), "-u", udid, "-q", "com.apple.mobile.device"],
         timeout=15,
     )
     info: dict[str, str] = {}
@@ -61,7 +120,7 @@ async def device_info(udid: str) -> dict:
                 info[m.group(1).strip()] = m.group(2).strip()
     # 全量查询兜底（个别固件对空域查询返回为空）
     if not info.get("DeviceName"):
-        code2, out2 = await _run([config.BIN_IDEVICE_INFO, "-u", udid], timeout=15)
+        code2, out2 = await _run([config.BIN_IDEVICE_INFO, *net_args(udid), "-u", udid], timeout=15)
         if code2 == 0:
             for ln in out2.splitlines():
                 m = re.match(r"^([^:]+):\s*(.+)$", ln.strip())
@@ -72,7 +131,7 @@ async def device_info(udid: str) -> dict:
 
 async def is_paired(udid: str) -> bool:
     code, _ = await _run(
-        [config.BIN_IDEVICEPAIR, "-u", udid, "validate"], timeout=15
+        [config.BIN_IDEVICEPAIR, *net_args(udid), "-u", udid, "validate"], timeout=15
     )
     return code == 0
 
@@ -134,7 +193,7 @@ async def pair(udid: str, timeout=60) -> tuple[bool, str, bool]:
     返回 (是否成功, 输出信息, 是否属于可重试的「等待信任」状态)。
     """
     code, out = await _run(
-        [config.BIN_IDEVICEPAIR, "-u", udid, "pair"], timeout=timeout
+        [config.BIN_IDEVICEPAIR, *net_args(udid), "-u", udid, "pair"], timeout=timeout
     )
     text = out.strip()
     if code == 0:
@@ -208,7 +267,7 @@ async def unpair(udid: str) -> dict:
 
     # 设备在线时最多试两轮：第一轮遇到锁屏/瞬时状态失败，第二轮通常能过
     for attempt in range(2 if online else 1):
-        code, out = await _run([config.BIN_IDEVICEPAIR, "-u", udid, "unpair"], timeout=20)
+        code, out = await _run([config.BIN_IDEVICEPAIR, *net_args(udid), "-u", udid, "unpair"], timeout=20)
         claimed = claimed or code == 0
         tool_broken = tool_broken or code in (126, 127)   # 工具链缺失，重试无意义
         purge = purge_local_pairing(udid)                 # 每轮都再试一次删证书
@@ -317,9 +376,11 @@ class PairSession:
         # 阶段 1：等待设备插线（最多 5 分钟）
         deadline = loop.time() + 300
         while loop.time() < deadline:
-            udids = await list_devices()
-            if udids:
-                self.udid = udids[0]
+            # 只挑 USB 设备：iPhone 的无线配对不被 idevicepair 支持
+            # （官方 NOTE：network pairing 仅 Apple TV），无线只能备份已配对设备。
+            usb = [d["udid"] for d in await scan_devices() if d["connection"] == TRANSPORT_USB]
+            if usb:
+                self.udid = usb[0]
                 self.broadcast({"stage": "found", "udid": self.udid})
                 break
             await asyncio.sleep(1.5)
@@ -327,8 +388,9 @@ class PairSession:
             self.stage = "error"
             self.broadcast({
                 "stage": "error",
-                "message": "5 分钟内未检测到 iOS 设备。请确认：数据线插在 NAS 机身 USB 口、"
-                           "手机已解锁、iOS 设备未处于「只充电」模式。",
+                "message": "5 分钟内未检测到 USB 连接的 iOS 设备。请确认：数据线插在 NAS 机身 USB 口、"
+                           "手机已解锁、iOS 设备未处于「只充电」模式。"
+                           "（首次配对必须用数据线：iPhone 不支持无线配对，无线只用于已配对设备的备份。）",
             })
             return
 

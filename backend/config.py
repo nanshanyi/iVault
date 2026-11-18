@@ -18,6 +18,10 @@ HOST = os.environ.get("IVAULT_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IVAULT_PORT", "8666"))
 LOG_LEVEL = os.environ.get("IVAULT_LOG", "INFO")
 
+# 无线（Wi-Fi）备份：由 entrypoint 在 netmuxd 成功启动后置为 1，
+# 前端据此显示「无线通道已就绪」而不是让用户猜。
+WIFI_ENABLED = os.environ.get("IVAULT_WIFI", "0") in ("1", "true", "yes", "on")
+
 # libimobiledevice 工具链
 BIN_IDEVICE_ID = os.environ.get("BIN_IDEVICE_ID", "idevice_id")
 BIN_IDEVICE_INFO = os.environ.get("BIN_IDEVICE_INFO", "ideviceinfo")

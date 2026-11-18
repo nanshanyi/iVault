@@ -1,5 +1,6 @@
 #!/bin/sh
-# 容器入口：拉起 usbmuxd（USB 通道 + 配对证书目录），然后启动 iVault Web 服务。
+# 容器入口：拉起 usbmuxd（USB 通道 + 配对证书目录），
+# 再把 netmuxd 以 shim 模式叠上去（追加 Wi-Fi 通道），最后启动 Web 服务。
 set -e
 
 mkdir -p /data/meta /data/backups /var/lib/lockdown
@@ -19,6 +20,40 @@ for _ in $(seq 1 25); do
     sleep 0.2
 done
 
-echo "iVault starting → http://0.0.0.0:8666"
+# ---------- 无线通道 ----------
+# netmuxd 在 shim 模式下监听另一个 socket：USB 请求转给上面的 usbmuxd，
+# 同时用 mDNS 发现局域网里开着「通过 Wi-Fi 同步」的已配对 iPhone。
+# 之后所有 idevice_* 工具都连这个 socket，就能同时看到 USB 与无线设备。
+#
+# 注意：mDNS 依赖局域网组播，默认 bridge 网络收不到，无线备份需用 host 网络
+# 部署（见 docker-compose.wifi.yml）。收不到也不影响 USB 备份。
+WIFI_SOCKET=/var/run/usbmuxd-net
+if [ "${IVAULT_WIFI:-1}" != "0" ] && command -v netmuxd >/dev/null 2>&1; then
+    rm -f "$WIFI_SOCKET"
+    RUST_LOG="${IVAULT_WIFI_LOG:-warn}" netmuxd \
+        --socket-path "$WIFI_SOCKET" \
+        --upstream-usbmuxd /var/run/usbmuxd \
+        >/var/log/netmuxd.log 2>&1 &
+    NETMUXD_PID=$!
+    for _ in $(seq 1 20); do
+        [ -S "$WIFI_SOCKET" ] && break
+        sleep 0.2
+    done
+    if [ -S "$WIFI_SOCKET" ] && kill -0 "$NETMUXD_PID" 2>/dev/null; then
+        export USBMUXD_SOCKET_ADDRESS="$WIFI_SOCKET"
+        export IVAULT_WIFI=1
+        echo "netmuxd started (pid $NETMUXD_PID) · socket=$WIFI_SOCKET · 无线通道已启用"
+    else
+        # 起不来就退回纯 USB，绝不因为无线把主流程搞挂
+        echo "⚠ netmuxd 未能启动，回落到 USB-only；详见 /var/log/netmuxd.log"
+        tail -n 5 /var/log/netmuxd.log 2>/dev/null || true
+        export IVAULT_WIFI=0
+    fi
+else
+    export IVAULT_WIFI=0
+    echo "无线通道已关闭（IVAULT_WIFI=0 或镜像内无 netmuxd）"
+fi
+
+echo "iVault starting → http://0.0.0.0:${IVAULT_PORT:-8666}"
 exec python3 -m uvicorn backend.main:app \
-    --host 0.0.0.0 --port 8666 --log-level "${IVAULT_LOG:-INFO}"
+    --host 0.0.0.0 --port "${IVAULT_PORT:-8666}" --log-level "${IVAULT_LOG:-INFO}"

@@ -165,13 +165,15 @@ function renderDashboard() {
     const col = score >= 80 ? '#00c47f' : score >= 50 ? '#f5b13d' : '#ff5d6c';
     const off = (132 * (1 - score / 100)).toFixed(0);
     const days = d.last_backup_at ? Math.floor((Date.now() / 1000 - d.last_backup_at) / 86400) : null;
+    const conn = d.connection || (d.online ? 'usb' : 'offline');
+    const live = conn !== 'offline';
     box.insertAdjacentHTML('beforeend',
       '<div class="dev-card" onclick="go(\'devices\')">' +
-        '<div class="dev-ico"><svg viewBox="0 0 24 24" fill="none" stroke="' + (d.online ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
+        '<div class="dev-ico"><svg viewBox="0 0 24 24" fill="none" stroke="' + (live ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
         '<div class="info"><b>' + esc(d.name || '设备') + '</b><div class="meta">' +
           esc(d.ios_version ? 'iOS ' + d.ios_version : '') + ' · UDID ····' + esc(d.udid.slice(-4)) +
           ' · ' + (days == null ? '未备份过' : days === 0 ? '今天已备份' : days + ' 天未备份') + '</div></div>' +
-        '<span class="badge ' + (d.online ? 'g' : 'a') + '"><i class="tag-ico"></i>' + (d.online ? '在线' : '离线') + '</span>' +
+        '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' + (conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线') + '</span>' +
         '<div class="ring"><svg width="52" height="52"><circle cx="26" cy="26" r="21" fill="none" stroke="var(--ringtrack)" stroke-width="4"/>' +
         '<circle cx="26" cy="26" r="21" fill="none" stroke="' + col + '" stroke-width="4" stroke-linecap="round" stroke-dasharray="132" stroke-dashoffset="' + off + '"/></svg>' +
         '<div class="num">' + score + '</div></div></div>');
@@ -191,21 +193,27 @@ function renderDashboard() {
 }
 
 /* ---------- 设备管理 ---------- */
+const CONN_LABEL = { usb: 'USB 直连', network: '无线 Wi-Fi', offline: '未连接' };
+
 function renderDevices() {
   const grid = $('devGrid');
   grid.innerHTML = '';
   state.devices.forEach(d => {
     const score = healthScore(d);
     const job = (state.status.active_jobs || []).find(j => j.udid === d.udid);
+    const conn = d.connection || (d.online ? 'usb' : 'offline');
+    const live = conn !== 'offline';
+    const badge = job ? '备份中' : conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线';
     grid.insertAdjacentHTML('beforeend',
       '<div class="card" style="padding:0;overflow:hidden">' +
         '<div style="padding:20px;display:flex;gap:15px;align-items:center">' +
-          '<div class="dev-ico" style="width:52px;height:52px"><svg viewBox="0 0 24 24" fill="none" stroke="' + (d.online ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7" style="width:26px;height:26px"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
+          '<div class="dev-ico" style="width:52px;height:52px"><svg viewBox="0 0 24 24" fill="none" stroke="' + (live ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7" style="width:26px;height:26px"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
           '<div style="flex:1"><b style="font-size:15px">' + esc(d.name || '设备') + '</b>' +
           '<div style="font-size:11.5px;color:var(--txt3);margin-top:4px">' + esc(d.model || '') + ' · iOS ' + esc(d.ios_version || '?') + '</div></div>' +
-          '<span class="badge ' + (d.online ? 'g' : 'a') + '"><i class="tag-ico"></i>' + (job ? '备份中' : d.online ? '在线' : '离线') + '</span>' +
+          '<span class="badge ' + (live || job ? 'g' : 'a') + '"><i class="tag-ico"></i>' + badge + '</span>' +
         '</div>' +
         '<div style="padding:0 20px 20px;font-size:12.5px;color:var(--txt2);line-height:2.15">' +
+          '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">连接方式</span><span>' + (CONN_LABEL[conn] || '未连接') + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">UDID</span><span class="num">···' + esc(d.udid.slice(-12)) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">配对时间</span><span>' + fmtTs(d.paired_at) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
@@ -213,7 +221,7 @@ function renderDevices() {
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">快照数 / 占用</span><span class="num">' + (d.snapshot_count || 0) + ' 份 · ' + fmtSize(d.total_bytes) + '</span></div>' +
         '</div>' +
         '<div style="padding:14px 20px;border-top:1px solid var(--stroke);display:flex;gap:9px">' +
-          '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + d.udid + '\')"' + (d.online ? '' : ' disabled') + '>立即备份</button>' +
+          '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + d.udid + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>' +
           '<button class="btn" onclick="go(\'library\')">快照</button>' +
           '<button class="btn danger" onclick="removeDevice(\'' + d.udid + '\')">取消配对</button>' +
         '</div></div>');
@@ -303,7 +311,10 @@ async function openWizard() {
   wizBody(
     '<div class="big-ico detect-ring"><svg viewBox="0 0 24 24" fill="none" stroke="#00e59b" stroke-width="1.6"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
     '<h3>请用数据线连接 iPhone 与 NAS</h3>' +
-    '<p>将 USB 线插入 NAS 机身上的 USB-A 接口，手机保持解锁。正在监听 USB 总线…</p>',
+    '<p>将 USB 线插入 NAS 机身上的 USB-A 接口，手机保持解锁。正在监听 USB 总线…</p>' +
+    '<p style="color:var(--txt3);font-size:12.5px;margin-top:8px">' +
+    '首次配对只能用数据线（iPhone 不支持无线配对）。配对过一次之后，只要手机和 NAS 在同一 Wi-Fi、' +
+    '且开启过「通过 Wi-Fi 同步」，备份就不必再插线。</p>',
     '<button class="btn ghost" onclick="closeWizard()">稍后再说</button>');
   try {
     const r = await api('/api/pair/begin', { method: 'POST' });
@@ -403,13 +414,19 @@ function closeWizard() {
 
 /* ---------- 备份任务（真实 SSE） ---------- */
 function quickBackup() {
-  const d = state.devices.find(x => x.online);
-  if (!d) { toast('当前没有在线设备，请先用数据线连接 iPhone 或确认 Wi-Fi 可达'); go('devices'); return; }
+  const d = state.devices.find(x => x.connection === 'usb' || x.connection === 'network' || x.online);
+  if (!d) {
+    toast(state.status.wifi_enabled
+      ? '当前没有可达设备：插上数据线，或让已配对 iPhone 与本机在同一 Wi-Fi 并解锁'
+      : '当前没有在线设备，请先用数据线连接 iPhone');
+    go('devices');
+    return;
+  }
   startBackup(d.udid);
 }
 async function startBackup(udid) {
   if (!udid) {
-    const d = state.devices.find(x => x.online);
+    const d = state.devices.find(x => x.connection === 'usb' || x.connection === 'network' || x.online);
     if (!d) { toast('没有在线设备，请先用数据线连接'); go('devices'); return; }
     udid = d.udid;
   }
@@ -631,7 +648,8 @@ async function refresh() {
     renderSideFoot(false);
     $('setPath').textContent = st.backup_dir || '—';
     $('aboutText').textContent = 'iVault v' + st.version + (st.os_name ? ' · ' + st.os_name : '') + ' · 备份目录 ' + st.backup_dir;
-    $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' + (st.active_jobs || []).length + ' 个进行中任务';
+    $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' +
+      (st.active_jobs || []).length + ' 个进行中任务 · 无线通道' + (st.wifi_enabled ? '已启用' : '未启用');
   } catch (e) {
     renderSideFoot(true);
     toast('连接后端失败：' + e.message);

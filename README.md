@@ -128,6 +128,38 @@ IVAULT_OS_NAME="DSM 7.2"        # 或 "UGOS 1.21"、'QTS 5.1'、'TrueNAS SCALE 2
 > 写着「Debian 13」而你的设备其实是群晖。默认不挂载也是这个原因：少数系统没有这个
 > 文件时，Docker 会在宿主机上建一个同名空目录。
 
+### 无线（Wi-Fi）备份
+
+插一次线配对之后，可以让它自动走 Wi-Fi 备份，不用每次插线。**首次配对仍然必须用数据线**
+——iPhone 的无线配对不被 `idevicepair` 支持（官方说明：network pairing 仅 Apple TV）。
+
+**三个前提**：
+
+1. 手机与 NAS 在同一局域网（mDNS 组播可达，跨 VLAN 通常不行）
+2. iOS 侧已开启「通过 Wi-Fi 同步」：在能识别它的电脑上用 Finder（macOS）或
+   Apple Devices（Windows）勾选一次「在 Wi-Fi 上与此 iPhone 同步」；若你的 iOS 版本
+   在手机端提供了该开关，直接打开即可
+3. 用 host 网络部署（下面这条），否则容器收不到 mDNS 组播
+
+```bash
+docker compose -f docker-compose.wifi.yml pull
+docker compose -f docker-compose.wifi.yml up -d --no-build
+```
+
+`docker-compose.wifi.yml` 与默认文件的差别只有 `network_mode: host`，其它完全一致；
+代价是端口映射失效，Web 端口由 `IVAULT_PORT`（默认 8666）直接决定。
+
+**工作原理**：`usbmuxd` 只认 USB，所以容器里再跑一个 `netmuxd`（shim 模式）——
+把 USB 请求转发给 `usbmuxd`，同时用 mDNS 发现网络上的已配对设备，对外仍然是一个
+标准 usbmuxd socket。上层 `idevice_*` 工具完全无感，只是能多看几台设备。
+netmuxd 起不来时入口脚本会自动回落到 USB-only，不影响原有功能。
+
+界面上的区别：设备卡片与总览会标注 `USB` / `Wi-Fi`；无线设备在备份前会先探活，
+避免 mDNS 残留的失效条目被误显示成「在线」。
+
+> ⚠️ 无线通道只服务**已配对过**的设备。发现列表里没出现你的手机，通常是上面第 2 条没做，
+> 或者设备正在休眠（点亮屏幕、重连一次 Wi-Fi 后 3 秒内会刷新）。
+
 ### 首次备份三步
 
 1. **设备管理 → 添加设备**：用数据线把 iPhone 插到 **NAS 机身上的 USB 口**
@@ -159,7 +191,7 @@ IVAULT_OS_NAME="DSM 7.2"        # 或 "UGOS 1.21"、'QTS 5.1'、'TrueNAS SCALE 2
 | 保留策略（1–10 份滑杆，每设备保留最近 N 份记录） | ✅ |
 | Webhook 通知 | ✅ |
 | 深浅色主题（跟随系统 / 手动切换 / 记忆） | ✅ |
-| Wi-Fi 无线备份（netmuxd） | ⏳ v0.2，见「已知限制」 |
+| Wi-Fi 无线备份（netmuxd / shim 模式） | ✅ 已实现，需 host 网络 + iOS 侧开启 Wi-Fi 同步 |
 | 备份内容浏览（相册/信息/联系人统计） | ⏳ v0.3 |
 | 备份加密（密码在 iPhone 侧设置） | ⏳ 后续 |
 | 多用户权限（对接 NAS 账户体系） | ⏳ 后续 |
@@ -169,12 +201,16 @@ IVAULT_OS_NAME="DSM 7.2"        # 或 "UGOS 1.21"、'QTS 5.1'、'TrueNAS SCALE 2
 ## 架构
 
 ```
-iPhone ──USB──► /dev/bus/usb ──► usbmuxd ──► libimobiledevice (idevicepair / idevicebackup2)
+iPhone ──USB──► /dev/bus/usb ──► usbmuxd ──┐
+iPhone ──Wi-Fi──► mDNS ──► netmuxd ───────┴──► 统一 usbmuxd socket
                                                   │
 浏览器 ◄──REST / SSE──► FastAPI (backend) ─────────┤
                           │                        │
                      SQLite 元数据            /data/backups/<UDID>/
                      + lockdown 证书           Apple MobileSync 备份库
+
+（netmuxd 以 shim 模式运行：USB 请求转发给 usbmuxd，网络设备自己发现，
+  对上层 idevice_* 工具仍是同一个 socket —— 它们不需要知道差异）
 ```
 
 ```
@@ -188,7 +224,7 @@ frontend/
   index.html  单页界面（内联 CSS，零依赖）
   app.js      渲染、REST、SSE、配对向导、主题切换
 scripts/
-  entrypoint.sh  启动 usbmuxd（--config-dir 持久证书）+ uvicorn
+  entrypoint.sh  启动 usbmuxd（--config-dir 持久证书）+ netmuxd（无线 shim）+ uvicorn
 ```
 
 ### 主要 API
@@ -219,10 +255,9 @@ GET    /api/docs                   Swagger 文档
 
 ## 已知限制（诚实清单）
 
-1. **v0.1 走 USB 通道**：容器内运行的是标准 `usbmuxd`，仅支持 USB 直连设备。
-   Wi-Fi 备份需要 `netmuxd`/`usbmuxd2` 做网络设备发现，且需先在 iPhone 上开启
-   「通过 Wi-Fi 同步」（通常要借 Mac/PC 的 iTunes 打开一次开关）；这属于 v0.2 范围，
-   两个参考项目里都有可复用的实现。
+1. **无线备份的两个硬边界**：① 首次配对必须插线（iPhone 不支持无线配对）；
+   ② iOS 侧的「通过 Wi-Fi 同步」只能在电脑端 Finder/iTunes 打开一次，NAS 无法代劳。
+   另外 mDNS 需要 host 网络与同一广播域，跨 VLAN / 子网通常发现不到。
 2. **增量快照共享基线目录**：`idevicebackup2` 用同一 `<UDID>/` 目录持续更新，
    磁盘上始终是「最新状态」。备份库中的历史记录是时间点标记，删除记录不会立即
    释放空间；若要真正保留多个独立版本，需要每次备份后对目录做硬链接快照（v0.3）。
@@ -237,6 +272,10 @@ GET    /api/docs                   Swagger 文档
 6. **验证状态**：
    - ✅ **配对链路已在真机验证**（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21）：
      设备发现 → 信任授权 → 证书落地 → 入库，含「未弹窗需拔插线」的排障路径
+   - ✅ **无线通道的命令层已验证**（macOS + 真实网络设备）：`idevice_id -n` 发现、
+     `idevicepair -n validate` 探活、`ideviceinfo -n` 读取均通过；走 -n 的通道选择与
+     失效 mDNS 条目的过滤已实测（列表里有设备但 validate 失败 → 判为不可达）
+   - ⬜ 镜像内 netmuxd（shim 模式）与容器 host 网络的实机联调未做
    - ⬜ 镜像构建、容器内 USB 透传、`idevicebackup2` 备份落盘仍未实测
    - ⬜ 其他 NAS 平台（群晖 / 威联通 / 飞牛 / TrueNAS）未实机测试，理论上只需 Docker 侧配置
    - 首次部署仍属 M0 验证，需把 iPhone 用数据线插到 NAS 上配合测试

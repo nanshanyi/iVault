@@ -67,6 +67,26 @@ RUN set -eux; \
     make -j"$(nproc)"; make install; \
     echo "usbmuxd-stock $USBMUXD_STOCK_REV" >> /usr/local/share/build-revisions.txt
 
+# ---------- Stage 1.5: netmuxd（无线通道）----------
+# usbmuxd 只认 USB；Wi-Fi 备份需要靠 mDNS 发现网络上的设备。
+# netmuxd 在 shim 模式下把上面那个 usbmuxd 的 USB 设备一起代理出来，
+# 再叠加网络设备，对外仍是一个标准的 usbmuxd socket —— 因此上层工具无感。
+# 同样是钉 commit 构建，产物固化进镜像，运行时不联网。
+FROM rust:1-bookworm AS netmuxd-build
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list 2>/dev/null || true; fi
+RUN apt-get update && apt-get install -y --no-install-recommends cmake \
+ && rm -rf /var/lib/apt/lists/*
+ARG NETMUXD_REF=7ce5620e2e2b738f736243a96d9f9a52a8044f90
+RUN set -eux; \
+    git init -q /src; \
+    cd /src; \
+    git remote add origin https://github.com/jkcoxson/netmuxd.git; \
+    git fetch -q --depth 1 origin "$NETMUXD_REF"; \
+    git checkout -q FETCH_HEAD; \
+    cargo build --release --bin netmuxd; \
+    install -Dm755 target/release/netmuxd /out/netmuxd
+
 # ---------- Stage 2: 精简运行镜像 ----------
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -94,8 +114,18 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 
 COPY --from=build /usr/local /usr/local
 COPY --from=build /opt/usbmuxd-stock /opt/usbmuxd-stock
+COPY --from=netmuxd-build /out/netmuxd /usr/local/bin/netmuxd
 RUN echo /usr/local/lib > /etc/ld.so.conf.d/local.conf && ldconfig \
  && mkdir -p /var/lib/lockdown
+
+# iOS 的配对握手用的是 SHA1 签名，OpenSSL 3 默认拒绝。真遇到
+# "invalid signature" 时把 OPENSSL_CONF 指向这个文件即可（默认不启用，避免副作用）。
+RUN printf '%s\n' \
+      '.include /etc/ssl/openssl.cnf' \
+      '[openssl_init]' \
+      'alg_section = evp_properties' \
+      '[evp_properties]' \
+      'rh-allow-sha1-signatures = yes' > /etc/ssl/ivault-openssl.cnf
 
 WORKDIR /app
 COPY backend /app/backend
