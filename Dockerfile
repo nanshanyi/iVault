@@ -132,6 +132,8 @@ COPY backend /app/backend
 COPY frontend /app/frontend
 COPY scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
+# USB 热插拔看护：容器内收不到 uevent，靠它检测设备接入后重启 usbmuxd 重扫
+COPY scripts/usb-watchdog.py /app/usb-watchdog.py
 
 EXPOSE 8666
 VOLUME ["/data/backups", "/data/meta", "/var/lib/lockdown"]

@@ -17,8 +17,8 @@ services:
     container_name: ivault
     # 访问 USB 总线是 iPhone 配对与整机备份的硬性前提
     privileged: true
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
+    # 必须走 volumes 的 bind mount，不能写 devices:（那是创建时的节点快照，
+    # 插拔后新节点在容器内不存在，热插拔与无线重连都会失效）
     # 无线通道的关键：host 网络才能收到 mDNS 组播
     network_mode: host
     environment:
@@ -30,6 +30,7 @@ services:
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
       - IVAULT_WIFI=1
     volumes:
+      - /dev/bus/usb:/dev/bus/usb
       - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（宿主机上的备份目录绝对路径）}:/data/backups
       - ${META_LOCATION:-./data}:/data/meta
       - ${META_LOCATION:-./data}/lockdown:/var/lib/lockdown

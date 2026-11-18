@@ -10,8 +10,10 @@ services:
     container_name: ivault
     # 访问 USB 总线是 iPhone 配对与整机备份的硬性前提
     privileged: true
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
+    # 注意：这里必须走 volumes 的 bind mount，不能写 devices:
+    # devices: 只在容器创建时快照一份 /dev 节点，运行中插拔产生的新节点
+    # （如 /dev/bus/usb/003/008）在容器内不存在，usbmuxd 重扫只会报
+    # ENOENT(errno=2) → LIBUSB_ERROR_NO_DEVICE，热插拔永远失效。
     ports:
       - "${IVAULT_PORT:-8666}:8666"
     environment:
@@ -27,6 +29,8 @@ services:
       # 见 docker-compose.wifi.yml，否则 mDNS 收不到局域网设备。
       - IVAULT_WIFI=${IVAULT_WIFI:-1}
     volumes:
+      # USB 总线：用 bind mount 才能实时看到插拔产生的设备节点（见上方说明）
+      - /dev/bus/usb:/dev/bus/usb
       # 备份库：Apple MobileSync 格式，含每台 UDID 的完整数据目录
       - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（宿主机上的备份目录绝对路径）}:/data/backups
       # 元数据：SQLite 数据库

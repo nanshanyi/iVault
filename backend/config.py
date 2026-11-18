@@ -16,7 +16,25 @@ LOCKDOWN_DIR = os.environ.get("IVAULT_LOCKDOWN", _DEFAULT_LOCKDOWN)
 
 HOST = os.environ.get("IVAULT_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IVAULT_PORT", "8666"))
-LOG_LEVEL = os.environ.get("IVAULT_LOG", "INFO")
+
+
+def normalize_log_level(value: str | None, default: str = "INFO") -> str:
+    """把用户填的日志级别规范成 logging 认识的大写形式。
+
+    logging.basicConfig(level=...) 只认 "INFO" 这类大写枚举，传 "info" 会直接抛
+    ValueError —— 而它在模块导入期执行，等于一个大小写笔误就能让整个服务起不来，
+    compose 里又配了 restart，于是变成无限重启。这里宽容处理：大小写、空格、
+    WARN 别名都接受，认不出来就退回默认级别，绝不因为一个日志开关把服务搞挂。
+    """
+    level = (value or "").strip().upper()
+    if level == "WARN":
+        level = "WARNING"
+    if level in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"):
+        return level
+    return default
+
+
+LOG_LEVEL = normalize_log_level(os.environ.get("IVAULT_LOG"), "INFO")
 
 # 无线（Wi-Fi）备份：由 entrypoint 在 netmuxd 成功启动后置为 1，
 # 前端据此显示「无线通道已就绪」而不是让用户猜。

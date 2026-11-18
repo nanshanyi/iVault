@@ -61,8 +61,34 @@ else
 fi
 
 echo "iVault starting → http://0.0.0.0:${IVAULT_PORT:-8666}"
+
+# ---------- USB 热插拔看护 ----------
+# 容器里的 usbmuxd 收不到 USB 热插拔事件：libusb 的 hotplug 订阅的是 udevd 的
+# 转发组，而容器内没有 udevd、宿主 udevd 也不跨 netns 转发。结果就是设备表在
+# 启动瞬间冻结 —— 容器运行中插 iPhone 永远认不到，只有重启进程才能重新枚举。
+# 看护监听 /dev/bus/usb 的节点创建事件，确认「总线上有苹果设备但 usbmuxd 没列出」
+# 后重启 usbmuxd 重扫，代价是插入后约 1 秒才在页面出现。详见 scripts/usb-watchdog.py。
+# 必须用后台启动：它会阻塞在事件循环里，且异常退出不影响主服务。
+if [ "${IVAULT_USB_WATCHDOG:-1}" != "0" ] && [ -f /app/usb-watchdog.py ]; then
+    python3 /app/usb-watchdog.py &
+    echo "usb-watchdog started · 插拔 iPhone 自动重扫（IVAULT_USB_WATCHDOG=0 可关闭）"
+fi
+
+# 日志级别统一成小写给 uvicorn：它的 --log-level 只接受小写枚举
+# (critical/error/warning/info/debug/trace)，传大写 "INFO" 会被 click 拒绝并启动失败。
+# Python 侧不用迁就：config.normalize_log_level 会把同一个值规范成大写给 logging。
+IVAULT_LOG=$(printf '%s' "${IVAULT_LOG:-INFO}" | tr '[:upper:]' '[:lower:]')
+case "$IVAULT_LOG" in
+    critical|error|warning|warn|info|debug|notset) ;;
+    *) echo "⚠ IVAULT_LOG='${IVAULT_LOG}' 不是合法级别，已回落到 info"; IVAULT_LOG=info ;;
+esac
+# WARN -> warning；NOTSET 不是 uvicorn 的合法级别，回落到 info
+[ "$IVAULT_LOG" = "warn" ] && IVAULT_LOG=warning
+[ "$IVAULT_LOG" = "notset" ] && IVAULT_LOG=info
+export IVAULT_LOG
+
 # --no-access-log：前端每 6 秒 4 个轮询请求，开 access log 一天五万多条，
 # 真报错会被淹掉。改用 backend/main.py 里的中间件，只记出错、写操作与慢请求。
 exec python3 -m uvicorn backend.main:app \
     --host 0.0.0.0 --port "${IVAULT_PORT:-8666}" \
-    --log-level "${IVAULT_LOG:-INFO}" --no-access-log
+    --log-level "$IVAULT_LOG" --no-access-log

@@ -146,6 +146,7 @@ scripts/
 | `IVAULT_PORT` | `8666` | Web 端口 |
 | `IVAULT_TAG` | `latest` | 镜像版本，可固定为 `v0.2.0` |
 | `IVAULT_WIFI` | `1` | `0` 关闭无线通道，只走 USB |
+| `IVAULT_USB_WATCHDOG` | `1` | `0` 关闭 USB 热插拔看护（关闭后容器运行中插线不识别，需重启容器） |
 | `IVAULT_OS_NAME` | 空 | 界面左下角显示的系统名，如 `DSM 7.2`；留空则自动探测，探测不到就隐藏 |
 | `IVAULT_LOG` | `INFO` | 日志级别 |
 | `IVAULT_BUILD` | — | 设为 `1` 时 `install.sh` 走本地编译而非拉镜像 |
@@ -195,6 +196,20 @@ GET    /api/docs                   Swagger 文档
 - **容器日志一处看全**。`usbmuxd` 和 `netmuxd` 不再写 `/var/log/*.log`（容器里没有持久卷，重启即丢），而是带前缀直接进 stdout。想看 usbmuxd 的详细过程：`IVAULT_USBMUXD_VERBOSE=1`。
 - **轮询不再刷屏**。前端每 6 秒刷新会打 4 个请求，一天五万多条；`uvicorn` 的 access log 已关掉，改由中间件只记**出错、写操作、超过 1.5 秒的请求**。
 - **诊断信息**是纯文本，含版本、系统、运行时长、设备与连接方式、最近快照与失败原因、最近 200 条告警。留一份在手上，过几天回来排查也够用。
+
+### 插上 iPhone 却一直显示离线
+
+容器内的 `usbmuxd` 收不到 USB 热插拔事件（`libusb` 的 hotplug 订阅的是 `udevd` 的转发组，容器里没有 `udevd`，宿主也不会跨 netns 转发），设备表在容器启动瞬间就冻结了。镜像里的 `scripts/usb-watchdog.py` 负责兜底：检测到设备接入就重启 `usbmuxd` 重扫，所以**插线后要等 1~2 秒**页面才会变在线。
+
+按现象分三种情况：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 插线后 1~2 秒自己变在线 | 正常，看护在重启 `usbmuxd` 重扫 | 无需处理 |
+| 日志有 `[usb-watchdog] ... 重新扫描`，紧接着 `libusb couldn't open USB device ... errno=2` | compose 里用 `devices:` 挂的 USB 总线，那是**容器创建时的节点快照**，插拔后新节点在容器内不存在 | 改成 `volumes: - /dev/bus/usb:/dev/bus/usb` |
+| 拔线后手机仍在广播 mDNS，但页面显示离线 | 无线通道探活失败 | 确认手机与 NAS 同网段、62078 端口可达；用 `IVAULT_WIFI_LOG=debug` 看 `[netmuxd]` 细节 |
+
+看护由 `IVAULT_USB_WATCHDOG` 控制，默认开启；设成 `0` 会回到旧行为（容器运行中插线不识别，需要重启容器）。
 
 ## 从源码构建
 
@@ -251,8 +266,8 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 1. **快照共享基线目录**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，磁盘上只有「最新状态」。备份库里的历史记录是时间点标记，删记录不会立刻释放空间。
 2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在 iPhone 侧开启加密备份并牢记密码——密码不会写到 NAS 上。
 3. **无线备份的两个硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次。
-4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
-5. **验证状态**：配对链路已在真机验证（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21），含「未弹窗需拔插线」的排障路径；无线通道的命令层已在 macOS 实测（`-n` 发现、探活、失效条目过滤）。**镜像内的 netmuxd、容器 USB 透传、`idevicebackup2` 落盘尚未实机联调**，其他 NAS 平台也未实机测试。
+4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`——且必须用 `volumes:` 做 bind mount，写 `devices:` 会让热插拔失效（见「出问题怎么查」）。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
+5. **验证状态**：配对链路已在真机验证（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21），含「未弹窗需拔插线」的排障路径；容器 USB 透传与热插拔看护已在 DXP4800 + iPhone 15 / iOS 27.3 实测（拔线重插后约 1 秒自动恢复在线）；无线通道的命令层已在 macOS 实测（`-n` 发现、探活、失效条目过滤），容器内 mDNS 发现（`[netmuxd] Adding network device`）也已实测。**`idevicebackup2` 落盘尚未实机联调**，其他 NAS 平台也未实机测试。
 
 ## 致谢
 

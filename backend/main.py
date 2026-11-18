@@ -20,8 +20,14 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, device, jobs, store
 
-logging.basicConfig(level=config.LOG_LEVEL,
-                    format="%(asctime)s %(name)s %(levelname)s %(message)s")
+# config.normalize_log_level 已保证合法；这里再兜一层：basicConfig 在导入期执行，
+# 一旦抛异常就是「容器起来又立刻退出」的崩溃循环，不值得为一个日志开关冒险。
+try:
+    logging.basicConfig(level=config.LOG_LEVEL,
+                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
+except ValueError:
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("ivault.main")
 
 
