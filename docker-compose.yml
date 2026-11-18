@@ -16,7 +16,10 @@ services:
       - "${IVAULT_PORT:-8666}:8666"
     environment:
       - TZ=Asia/Shanghai
-      - IVAULT_LOG=INFO
+      - IVAULT_LOG=${IVAULT_LOG:-INFO}
+      # 排查用：1=usbmuxd 输出详细日志；[netmuxd] 的级别由 IVAULT_WIFI_LOG 控制
+      - IVAULT_USBMUXD_VERBOSE=${IVAULT_USBMUXD_VERBOSE:-0}
+      - IVAULT_WIFI_LOG=${IVAULT_WIFI_LOG:-warn}
       # 可选：想让界面左下角显示系统版本时填（例如 "DSM 7.2"、"UGOS 1.21"、
       # "QTS 5.1"）。不填则尝试读取下面的 /host-os-release，都取不到就隐藏这段。
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}

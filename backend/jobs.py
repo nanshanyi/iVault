@@ -33,6 +33,7 @@ class Job:
         self.progress = 0
         self.phase = "准备中"
         self.log_tail: list[str] = []
+        self.log_stamped: list[str] = []      # 带时间戳，落库用（前端自己有时间列）
         self.proc: asyncio.subprocess.Process | None = None
         self.task: asyncio.Task | None = None
 
@@ -58,7 +59,26 @@ class Job:
         self.log_tail.append(line)
         if len(self.log_tail) > 400:
             self.log_tail.pop(0)
+        # 落库版本带时间戳：事后要看「哪一步卡了多久」，没有时间就没法判断
+        self.log_stamped.append(datetime.datetime.now().strftime("%H:%M:%S ") + line)
+        if len(self.log_stamped) > 2000:
+            self.log_stamped.pop(0)
         self.broadcast({"type": "log", "line": line})
+
+    def _log_text(self, header: str = "") -> str:
+        body = "\n".join(self.log_stamped)
+        return (header + "\n" + body) if header else body
+
+    def _persist_log(self, error: str = ""):
+        """把日志落到快照记录里；失败也不能影响任务收尾。"""
+        if not self.snap_id:
+            return
+        header = (f"# {self.kind} {self.udid}  {self.status}  "
+                  f"{datetime.datetime.now().isoformat(timespec='seconds')}")
+        try:
+            store.save_snapshot_log(self.snap_id, self._log_text(header), error)
+        except Exception as e:  # noqa: BLE001
+            log.warning("快照 #%s 日志落库失败：%s", self.snap_id, e)
 
     # ----- 执行 -----
 
@@ -84,7 +104,11 @@ class Job:
                 stderr=asyncio.subprocess.STDOUT,
             )
         except FileNotFoundError as e:
-            self._finish("FAILED", error=f"找不到 {config.BIN_IDEVICEBACKUP2}: {e}")
+            err = f"找不到 {config.BIN_IDEVICEBACKUP2}：{e}"
+            self.add_log(err)
+            # 之前这里直接返回，快照会永远停在 RUNNING
+            store.finish_snapshot(self.snap_id, status="FAILED", error=err)
+            self._finish("FAILED", error=err)
             return
 
         assert self.proc.stdout
@@ -103,6 +127,7 @@ class Job:
 
         if self.status == "CANCELED":
             store.finish_snapshot(self.snap_id, status="CANCELED")
+            self._persist_log("用户取消")
             self.broadcast({"type": "canceled"})
             return
         if rc == 0:
@@ -116,6 +141,7 @@ class Job:
 
     def _finish(self, status: str, **extra):
         self.status = status
+        self._persist_log(extra.get("error", ""))
         self.broadcast({"type": status.lower(), **extra})
         for q in list(self.subscribers):
             try:

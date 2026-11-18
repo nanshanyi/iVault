@@ -23,7 +23,9 @@ services:
     network_mode: host
     environment:
       - TZ=Asia/Shanghai
-      - IVAULT_LOG=INFO
+      - IVAULT_LOG=${IVAULT_LOG:-INFO}
+      - IVAULT_USBMUXD_VERBOSE=${IVAULT_USBMUXD_VERBOSE:-0}
+      - IVAULT_WIFI_LOG=${IVAULT_WIFI_LOG:-warn}
       - IVAULT_PORT=${IVAULT_PORT:-8666}
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
       - IVAULT_WIFI=1

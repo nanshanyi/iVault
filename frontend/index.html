@@ -238,6 +238,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
   display:flex;align-items:center;justify-content:center;transition:.18s}
 .wiz-close svg{width:14px;height:14px}
 .wiz-close:hover{background:var(--card-hover);border-color:var(--stroke);color:var(--txt)}
+/* —— 快照日志浮层 —— */
+.log-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:4px}
+.log-wrap{margin:16px 0 0;background:#060a0f;border:1px solid var(--stroke);border-radius:12px;
+  padding:14px 16px;font-family:var(--mono);font-size:11.5px;line-height:1.8;color:#8fe8c2;
+  height:min(52vh,460px);overflow:auto;white-space:pre-wrap;word-break:break-word;text-align:left}
+.log-wrap::-webkit-scrollbar{width:6px}
+.log-wrap::-webkit-scrollbar-thumb{background:var(--stroke2);border-radius:99px}
+/* 历史表里的「日志」小按钮：不新增列，塞在状态徽标后面 */
+.log-btn{background:none;border:1px solid transparent;color:var(--txt3);font-size:11px;
+  padding:2px 7px;border-radius:7px;cursor:pointer;margin-left:7px;font-family:inherit;transition:.18s}
+.log-btn:hover{color:var(--green2);border-color:rgba(0,196,127,.4);background:var(--card-hover)}
 @media (max-width:1000px){.wiz-overlay{padding:20px 20px 20px calc(var(--side-w) + 20px)}}
 .steps{display:flex;align-items:center;margin-bottom:28px}
 .step{flex:1;text-align:center;position:relative}
@@ -592,6 +603,8 @@ td b{color:var(--txt);font-weight:600}
         <b style="font-size:14.5px">关于</b>
         <div class="set-row"><div><div class="k">iVault</div><div class="d" id="aboutText">—</div></div></div>
         <div class="set-row"><div><div class="k">连接状态</div><div class="d" id="aboutOnline">—</div></div></div>
+        <div class="set-row"><div><div class="k">诊断信息</div><div class="d">版本、系统、设备、最近告警 —— 出问题时一键复制，粘到 Issue 里就够定位</div></div>
+          <button class="btn" onclick="copyDiagnostics(this)" style="flex:none">复制</button></div>
       </div>
     </div>
   </div>
@@ -612,6 +625,27 @@ td b{color:var(--txt);font-weight:600}
     <div class="wiz-actions" id="wizActions"></div>
     <!-- 关闭按钮放最后：绝对定位不影响视觉位置，但 DOM 顺序靠后可确保压在步骤条之上 -->
     <button class="wiz-close" onclick="closeWizard()" title="关闭（Esc）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- 快照日志：回看某次备份/恢复的输出。与向导同一套浮层，避免挤压页面布局 -->
+<div class="wiz-overlay" id="logOverlay" style="display:none">
+  <div class="card wizard" role="dialog" aria-modal="true" aria-label="任务日志" style="max-width:780px">
+    <div class="log-head">
+      <div style="flex:1;min-width:0">
+        <b style="font-size:15px" id="logTitle">任务日志</b>
+        <div style="font-size:11.5px;color:var(--txt3);margin-top:5px" id="logMeta"></div>
+      </div>
+      <span class="badge b" id="logStatus" style="flex:none">—</span>
+    </div>
+    <pre class="log-wrap" id="logBody">加载中…</pre>
+    <div class="wiz-actions">
+      <button class="btn ghost" onclick="closeLog()">关闭</button>
+      <button class="btn" onclick="copySnapshotLog(this)">复制日志</button>
+    </div>
+    <button class="wiz-close" onclick="closeLog()" title="关闭（Esc）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>

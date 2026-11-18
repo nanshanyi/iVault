@@ -1,10 +1,13 @@
 """SQLite 元数据存储（设备 / 快照 / 设置）。"""
 import json
+import logging
 import sqlite3
 import threading
 import time
 
 from . import config
+
+log = logging.getLogger("ivault.store")
 
 _local = threading.local()
 
@@ -26,7 +29,9 @@ CREATE TABLE IF NOT EXISTS snapshots (
     size_bytes INTEGER DEFAULT 0,
     type TEXT DEFAULT 'FULL',
     status TEXT DEFAULT 'RUNNING',
-    note TEXT DEFAULT ''
+    note TEXT DEFAULT '',
+    error TEXT DEFAULT '',
+    log TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -48,7 +53,20 @@ def conn() -> sqlite3.Connection:
 
 def init_db():
     conn().executescript(SCHEMA)
+    _migrate()
     conn().commit()
+
+
+def _migrate():
+    """给旧库补上后加的列（SQLite 没有 ADD COLUMN IF NOT EXISTS）。
+
+    老库里的快照没有日志，界面会显示「无日志」，不影响使用。
+    """
+    have = {r["name"] for r in conn().execute("PRAGMA table_info(snapshots)")}
+    for col, decl in (("error", "TEXT DEFAULT ''"), ("log", "TEXT DEFAULT ''")):
+        if col not in have:
+            conn().execute(f"ALTER TABLE snapshots ADD COLUMN {col} {decl}")
+            log.info("数据库迁移：snapshots 增加 %s 列", col)
 
 
 # ---------- devices ----------
@@ -100,29 +118,68 @@ def create_snapshot(udid: str, snap_type="FULL", note="") -> int:
     return cur.lastrowid
 
 
-def finish_snapshot(snap_id: int, status="COMPLETE", size_bytes=0, snap_type=None):
+def finish_snapshot(snap_id: int, status="COMPLETE", size_bytes=0, snap_type=None,
+                    error: str = "", log_text: str | None = None):
+    """收尾一次快照。
+
+    error / log_text 用于事后排查：日志只保留末尾 MAX_LOG_CHARS 字符，
+    足够看清失败前后的上下文，又不会把库撑大（一次备份可刷出上千行）。
+    """
+    if log_text is not None:
+        if len(log_text) > MAX_LOG_CHARS:
+            log_text = "…（前面 " + str(len(log_text) - MAX_LOG_CHARS) + " 字符已省略）\n" \
+                       + log_text[-MAX_LOG_CHARS:]
+    sets = ["status=?", "size_bytes=?", "finished_at=?", "error=?"]
+    vals: list = [status, size_bytes, int(time.time()), (error or "")[:500]]
     if snap_type:
-        conn().execute(
-            "UPDATE snapshots SET status=?, size_bytes=?, finished_at=?, type=? WHERE id=?",
-            (status, size_bytes, int(time.time()), snap_type, snap_id),
-        )
-    else:
-        conn().execute(
-            "UPDATE snapshots SET status=?, size_bytes=?, finished_at=? WHERE id=?",
-            (status, size_bytes, int(time.time()), snap_id),
-        )
+        sets.append("type=?")
+        vals.append(snap_type)
+    if log_text is not None:
+        sets.append("log=?")
+        vals.append(log_text)
+    vals.append(snap_id)
+    conn().execute("UPDATE snapshots SET " + ", ".join(sets) + " WHERE id=?", vals)
     conn().commit()
 
 
+# 单条快照日志的落库上限（字符）
+MAX_LOG_CHARS = 24000
+
+
+def save_snapshot_log(snap_id: int, log_text: str, error: str = ""):
+    """任务结束时把日志尾部与失败原因写进快照记录。
+
+    进程退出后 Job 对象就从内存里移除，日志若不落库就彻底没了——
+    用户过几个小时再问「那次为什么失败」，只能看到一条 FAILED。
+    """
+    if len(log_text) > MAX_LOG_CHARS:
+        log_text = "…（前面 " + str(len(log_text) - MAX_LOG_CHARS) + " 字符已省略）\n" \
+                   + log_text[-MAX_LOG_CHARS:]
+    if error:
+        conn().execute("UPDATE snapshots SET log=?, error=? WHERE id=?",
+                       (log_text, error[:500], snap_id))
+    else:
+        conn().execute("UPDATE snapshots SET log=? WHERE id=?", (log_text, snap_id))
+    conn().commit()
+
+
+def get_snapshot(snap_id: int) -> dict | None:
+    row = conn().execute("SELECT * FROM snapshots WHERE id=?", (snap_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def list_snapshots(udid: str | None = None, limit=100) -> list[dict]:
+    """列表不返回 log 全文（单条可达几十 KB），只给 has_log 供前端决定是否显示入口。"""
+    cols = ("id, udid, started_at, finished_at, size_bytes, type, status, note, error, "
+            "CASE WHEN log IS NULL OR log='' THEN 0 ELSE 1 END AS has_log")
     if udid:
         rows = conn().execute(
-            "SELECT * FROM snapshots WHERE udid=? ORDER BY started_at DESC LIMIT ?",
+            f"SELECT {cols} FROM snapshots WHERE udid=? ORDER BY started_at DESC LIMIT ?",
             (udid, limit),
         ).fetchall()
     else:
         rows = conn().execute(
-            "SELECT * FROM snapshots ORDER BY started_at DESC LIMIT ?", (limit,)
+            f"SELECT {cols} FROM snapshots ORDER BY started_at DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
 

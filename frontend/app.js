@@ -320,7 +320,7 @@ function wizBody(html, actions) {
 async function openWizard() {
   go('devices');
   $('wizard').style.display = 'flex';        // 浮层：不参与布局，不会再挤压卡片宽度
-  document.body.style.overflow = 'hidden';   // 锁住背景滚动
+  lockScroll();                              // 锁住背景滚动
   resetWizScroll();
   if (pairSource) pairSource.close();
   wizStep(1);
@@ -439,7 +439,16 @@ function closeWizard() {
   // 关 SSE 放在 try 里：任何异常都不能挡住浮层消失
   try { if (pairSource) { pairSource.close(); pairSource = null; } } catch (e) { /* ignore */ }
   $('wizard').style.display = 'none';
-  document.body.style.overflow = '';
+  unlockScroll();
+}
+/* 两个浮层共用 body 滚动锁：都关掉才解锁，否则关一个会让另一个下面的页面滚起来 */
+function lockScroll() { document.body.style.overflow = 'hidden'; }
+function unlockScroll() {
+  const anyOpen = ['wizard', 'logOverlay'].some(id => {
+    const el = $(id);
+    return el && el.style.display !== 'none';
+  });
+  if (!anyOpen) document.body.style.overflow = '';
 }
 function resetWizScroll() {
   const box = document.querySelector('#wizard .wizard');
@@ -447,9 +456,90 @@ function resetWizScroll() {
 }
 /* Esc 关闭；点遮罩不关（配对进行中误触会中断会话） */
 document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const logOv = $('logOverlay');
+  if (logOv && logOv.style.display !== 'none') { closeLog(); return; }
   const ov = $('wizard');
-  if (e.key === 'Escape' && ov && ov.style.display !== 'none') closeWizard();
+  if (ov && ov.style.display !== 'none') closeWizard();
 });
+
+/* ---------- 快照日志（事后排查用） ---------- */
+const _logCache = {};
+async function openSnapshotLog(id) {
+  $('logTitle').textContent = '快照 #' + String(id).padStart(4, '0') + ' 日志';
+  $('logMeta').textContent = '';
+  $('logStatus').textContent = '—';
+  $('logStatus').className = 'badge b';
+  $('logBody').textContent = '加载中…';
+  $('logOverlay').style.display = 'flex';
+  lockScroll();
+  $('logBody').scrollTop = 0;
+  try {
+    const r = _logCache[id] || (await api('/api/snapshots/' + id + '/log'));
+    _logCache[id] = r;
+    const parts = [devName(r.udid), '开始 ' + fmtTs(r.started_at)];
+    if (r.finished_at) parts.push('结束 ' + fmtTs(r.finished_at));
+    if (r.error) parts.push('原因：' + r.error);
+    $('logMeta').textContent = parts.join(' · ');
+    const map = { COMPLETE: ['成功', 'g'], FAILED: ['失败', 'r'], CANCELED: ['已取消', 'a'] };
+    const [txt, cls] = map[r.status] || ['进行中', 'b'];
+    $('logStatus').textContent = txt;
+    $('logStatus').className = 'badge ' + cls;
+    $('logBody').textContent = r.log ||
+      '这条记录没有保存日志。\n\n旧版本产生的任务不会落库；从本版本起，备份与恢复的输出都会存在快照记录里，随时可以回来查看。';
+  } catch (e) {
+    $('logBody').textContent = '读取失败：' + e.message;
+  }
+}
+function closeLog() {
+  $('logOverlay').style.display = 'none';
+  unlockScroll();
+}
+function copySnapshotLog(btn) {
+  copyText($('logBody').textContent, btn, '复制日志');
+}
+
+/* ---------- 诊断信息 ---------- */
+async function copyDiagnostics(btn) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '收集…';
+  try {
+    const r = await api('/api/diagnostics');
+    copyText(r.text, btn, old);
+  } catch (e) {
+    toast('收集失败：' + e.message);
+    btn.textContent = old;
+  } finally {
+    btn.disabled = false;
+  }
+}
+/* 剪贴板：NAS 上用 http 访问，不是安全上下文，navigator.clipboard 可能不可用，
+   所以保留 textarea + execCommand 的退路，否则点了会静默失败。 */
+async function copyText(text, btn, restore) {
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (e) { /* 走退路 */ }
+  if (!ok) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.select();
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+  }
+  toast(ok ? '已复制到剪贴板' : '复制失败，请手动选中文本复制');
+  if (btn && restore) {
+    btn.textContent = ok ? '已复制' : restore;
+    setTimeout(() => { btn.textContent = restore; }, 1600);
+  }
+}
 
 /* ---------- 备份任务（真实 SSE） ---------- */
 function quickBackup() {
@@ -563,12 +653,17 @@ function renderHistory() {
   snaps.forEach(s => {
     const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at : null;
     const badge = s.status === 'COMPLETE' ? 'g' : s.status === 'FAILED' ? 'r' : 'a';
+    const label = s.status === 'COMPLETE' ? '成功' : s.status === 'FAILED' ? '失败' : s.status === 'CANCELED' ? '已取消' : '进行中';
+    // 失败的记录即使没日志也留入口：至少能看到失败原因
+    const logBtn = (s.has_log || s.status === 'FAILED')
+      ? '<button class="log-btn" onclick="event.stopPropagation();openSnapshotLog(' + s.id + ')" title="'
+        + (s.error ? esc(s.error) : '查看这次任务的输出') + '">日志</button>' : '';
     body.insertAdjacentHTML('beforeend',
       '<tr><td><b>' + esc(devName(s.udid)) + '</b></td>' +
       '<td><span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span></td>' +
       '<td class="num">' + fmtTs(s.started_at) + '</td><td class="num">' + fmtDur(dur) + '</td>' +
       '<td class="num">' + fmtSize(s.size_bytes) + '</td>' +
-      '<td><span class="badge ' + badge + '">' + esc(s.status === 'COMPLETE' ? '成功' : s.status === 'FAILED' ? '失败' : s.status === 'CANCELED' ? '已取消' : '进行中') + '</span></td></tr>');
+      '<td><span class="badge ' + badge + '">' + label + '</span>' + logBtn + '</td></tr>');
   });
 }
 

@@ -5,6 +5,7 @@
 容器 entrypoint 会先拉起 usbmuxd（USB 通道 + 配对证书目录），再启动本服务。
 """
 import asyncio
+import collections
 import datetime
 import logging
 import os
@@ -13,7 +14,7 @@ import secrets
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -23,10 +24,65 @@ logging.basicConfig(level=config.LOG_LEVEL,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("ivault.main")
 
+
+class _RingHandler(logging.Handler):
+    """把 WARNING 及以上的日志留在内存里，供「诊断信息」引用。
+
+    容器日志会被重启清空，用户来问问题时往往已经看不到当时那条报错；
+    这里保一份最近 200 条，够复现一次故障的上下文。
+    """
+
+    def __init__(self, capacity: int = 200):
+        super().__init__(level=logging.WARNING)
+        self.buf: collections.deque[str] = collections.deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            self.buf.append(
+                datetime.datetime.fromtimestamp(record.created).strftime("%m-%d %H:%M:%S")
+                + " " + record.levelname[:4] + " " + record.name.replace("ivault.", "")
+                + ": " + record.getMessage()
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_ring = _RingHandler()
+logging.getLogger().addHandler(_ring)
+# uvicorn 自己的 logger 不挂在 root 上，单独挂一份，否则 access / 启动错误收不到
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    logging.getLogger(_name).addHandler(_ring)
+
 # 版本号由镜像构建参数注入（CI 传 tag 名），本地开发回落到默认值
 VERSION = os.environ.get("IVAULT_VERSION", "0.1.0")
 
 app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
+
+# 前端每 6 秒刷一轮状态，一次 4 个请求 —— 开着 uvicorn 的 access log 时，
+# 一天五万多条轮询记录会把真正的报错彻底淹掉。entrypoint 里已加 --no-access-log，
+# 改由这里只记「值得看」的请求：出错、写操作、异常慢的。
+_QUIET_GET = ("/api/status", "/api/devices", "/api/snapshots", "/api/settings", "/api/jobs/active")
+
+
+@app.middleware("http")
+async def _access_log(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - t0) * 1000
+    path = request.url.path
+    if response.status_code >= 400:
+        lvl = log.error if response.status_code >= 500 else log.warning
+    elif request.method in ("GET", "HEAD") and (
+            path in _QUIET_GET or not path.startswith("/api")):
+        return response                      # 轮询与静态资源：正常时不记
+    elif path.endswith("/events"):
+        return response                      # SSE 长连接，耗时没有参考意义
+    elif ms < 1500:
+        return response
+    else:
+        lvl = log.info
+    lvl("%s %s → %s  %.0fms", request.method, path, response.status_code, ms)
+    return response
 
 _pair_sessions: dict[str, device.PairSession] = {}
 _state = {"online_devices": [], "transports": {}, "boot_at": time.time()}
@@ -305,6 +361,78 @@ async def job_cancel(job_id: str):
         raise HTTPException(404, "任务不存在或已结束")
     await job.cancel()
     return {"ok": True}
+
+
+@app.get("/api/snapshots/{snap_id}/log")
+async def snapshot_log(snap_id: int):
+    """回看某次备份的日志。
+
+    以前这些日志只活在 Job 对象里，任务一结束就没了；现在落进 snapshots.log，
+    可以事后回答「昨晚那次为什么失败」。
+    """
+    s = store.get_snapshot(snap_id)
+    if not s:
+        raise HTTPException(404, "快照不存在")
+    return {
+        "id": snap_id,
+        "udid": s["udid"],
+        "status": s["status"],
+        "error": s.get("error") or "",
+        "started_at": s["started_at"],
+        "finished_at": s["finished_at"],
+        "log": s.get("log") or "",
+    }
+
+
+@app.get("/api/diagnostics")
+async def diagnostics():
+    """一键收集排查所需的全部信息（给用户复制粘贴用）。"""
+    st = await status()
+    lines: list[str] = []
+    add = lines.append
+    add("=== iVault 诊断信息 ===")
+    add("生成时间   : " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip())
+    add("版本       : " + str(st["version"]))
+    add("系统       : " + (st["os_name"] or "（未识别）"))
+    add("运行时长   : " + fmt_uptime(st["uptime_s"]))
+    add("无线通道   : " + ("已启用" if st["wifi_enabled"] else "未启用（仅 USB）"))
+    add("备份目录   : " + st["backup_dir"])
+    add("剩余空间   : " + human_size(st["disk_free_bytes"]))
+    add("")
+    add("--- 设备 ---")
+    devs = await devices()
+    for d in devs:
+        add(f"{d.get('name') or '?'} · {d.get('model') or '?'} · iOS {d.get('ios_version') or '?'}"
+            f" · {d['connection']} · ····{d['udid'][-6:]}")
+    if not devs:
+        add("（无）")
+    add("")
+    add("--- 最近快照 ---")
+    for s in store.list_snapshots(limit=8):
+        flag = ("  " + (s.get("error") or "")[:80]) if s.get("error") else ""
+        add(f"#{s['id']} {s['status']} {datetime.datetime.fromtimestamp(s['started_at']).strftime('%m-%d %H:%M')}"
+            f" {human_size(s['size_bytes'])}{flag}")
+    add("")
+    add("--- 最近告警/错误（内存中最近 200 条） ---")
+    errs = list(_ring.buf)
+    add("\n".join(errs) if errs else "（无）")
+    return {"text": "\n".join(lines), "generated_at": int(time.time())}
+
+
+def human_size(n: int) -> str:
+    f = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if f < 1024 or unit == "TB":
+            return f"{f:.1f}{unit}" if unit != "B" else f"{int(f)}B"
+        f /= 1024
+    return f"{f:.1f}TB"
+
+
+def fmt_uptime(sec: int) -> str:
+    dd, rem = divmod(int(sec or 0), 86400)
+    hh, rem = divmod(rem, 3600)
+    mm = rem // 60
+    return (f"{dd}天" if dd else "") + (f"{hh}小时" if hh or dd else "") + f"{mm}分"
 
 
 @app.get("/api/snapshots")
