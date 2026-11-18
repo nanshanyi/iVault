@@ -89,8 +89,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
    再随宽度收缩移回来，看起来就是「跳一下」。 */
 .side-collapsed .logo{padding:6px 3px 22px}
 .side-collapsed .logo h1,.side-collapsed .logo span,
-.side-collapsed .nav-item span,.side-collapsed .nav-badge,
-.side-collapsed #themeLabel{display:none}
+.side-collapsed .nav-item span,.side-collapsed .nav-badge{display:none}
 /* 底部状态只留那个会呼吸的圆点，服务是否在线仍然一眼可见 */
 .side-collapsed .side-foot{padding:14px 10px 6px}
 .side-collapsed .side-foot #sideState,.side-collapsed .side-foot #sideOs,
@@ -98,7 +97,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 /* 64 - 20(侧栏内边距) - 17(图标) = 27，左右各 13.5 → 图标在收起态正好居中且位置连续 */
 .side-collapsed .nav-item{padding:11px 13.5px}
 /* 64 - 20 = 44，主题按钮 34 → 左右各 5 */
-.side-collapsed .side-tools{padding:4px 5px 12px}
+.side-collapsed .side-tools{padding:4px 5px 12px;gap:0}
 /* 骑在侧栏分割线上的收起按钮 */
 .side-toggle{position:absolute;top:26px;right:-12px;z-index:20;width:24px;height:24px;border-radius:50%;
   display:flex;align-items:center;justify-content:center;cursor:pointer;
@@ -107,7 +106,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .side-toggle svg{width:13px;height:13px;transition:transform .22s ease}
 .side-toggle:hover{color:var(--green2);border-color:rgba(0,196,127,.5);background:var(--card-hover)}
 .side-collapsed .side-toggle svg{transform:rotate(180deg)}
-.side-tools{display:flex;gap:9px;align-items:center;padding:4px 10px 12px;transition:padding .22s ease}
+.side-tools{display:flex;gap:9px;align-items:center;padding:4px 10px 12px;
+  transition:padding .22s ease,gap .22s ease}
+/* 主题文字用「收窄 + 淡出」而不是 display:none —— display 不可过渡，
+   切换瞬间那一行会突然空掉，看起来就是突变。 */
+#themeLabel{display:inline-block;min-width:0;white-space:nowrap;overflow:hidden;max-width:92px;
+  transition:max-width .22s ease,opacity .14s ease}
+.side-collapsed #themeLabel{max-width:0;opacity:0}
 .logo{display:flex; align-items:center; gap:11px; padding:6px 10px 22px;
   transition:padding .22s ease}
 .logo>div:last-child{min-width:0;overflow:hidden}
