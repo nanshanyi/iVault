@@ -87,11 +87,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 /* 收起态一律保持左对齐，只收内边距。
    不要用 justify-content:center —— 该属性不可过渡，点击瞬间图标会先跳到中线，
    再随宽度收缩移回来，看起来就是「跳一下」。 */
-.side-collapsed .logo{padding:6px 3px 22px}
+.side-collapsed .logo{padding:6px 3px 18px}
 .side-collapsed .logo h1,.side-collapsed .logo span,
 .side-collapsed .nav-item span,.side-collapsed .nav-badge{display:none}
 /* 底部状态只留那个会呼吸的圆点，服务是否在线仍然一眼可见 */
-.side-collapsed .side-foot{padding:14px 10px 6px}
 .side-collapsed .side-foot #sideState,.side-collapsed .side-foot #sideOs,
 .side-collapsed .side-foot #sideVer,.side-collapsed .side-foot br{display:none}
 /* 64 - 20(侧栏内边距) - 17(图标) = 27，左右各 13.5 → 图标在收起态正好居中且位置连续 */
@@ -114,26 +113,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .side-collapsed .side-toggle{right:0}
 .side-collapsed .side-toggle svg{transform:rotate(180deg)}
 .side-tools{display:flex;gap:9px;align-items:center;padding:4px 10px 12px;
-  transition:padding .22s ease,gap .22s ease}
+  transition:padding .22s ease,gap .22s ease; height:50px; box-sizing:border-box}
 /* 主题文字用「收窄 + 淡出」而不是 display:none —— display 不可过渡，
    切换瞬间那一行会突然空掉，看起来就是突变。 */
 #themeLabel{display:inline-block;min-width:0;white-space:nowrap;overflow:hidden;max-width:92px;
   transition:max-width .22s ease,opacity .14s ease}
 .side-collapsed #themeLabel{max-width:0;opacity:0}
-.logo{display:flex; align-items:center; gap:11px; padding:6px 10px 22px;
-  transition:padding .22s ease}
+.logo{display:flex; align-items:center; gap:11px; padding:6px 10px 18px;
+  transition:padding .22s ease; height:66px; box-sizing:border-box}
 .logo>div:last-child{min-width:0;overflow:hidden}
 .logo h1,.logo span{white-space:nowrap}
-.logo-mark{width:38px;height:38px;border-radius:11px;flex-shrink:0;
+.logo-mark{width:42px;height:42px;border-radius:12px;flex-shrink:0;
   background:linear-gradient(135deg,#00c47f,#0080ff); display:flex;align-items:center;justify-content:center;
   box-shadow:0 4px 14px rgba(0,196,127,.35), inset 0 1px 0 rgba(255,255,255,.28)}
-.logo-mark svg{width:25px;height:25px}
+.logo-mark svg{width:28px;height:28px}
 .logo h1{font-size:17px; font-weight:700; letter-spacing:.3px}
 .logo h1 em{font-style:normal;color:var(--green2)}
 .logo span{display:block;font-size:10.5px;color:var(--txt3);font-weight:500;letter-spacing:.5px}
 .nav{display:flex;flex-direction:column;gap:3px;flex:1}
 .nav-item{display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:12px;cursor:pointer;
   color:var(--txt2);font-size:13.5px;font-weight:500;border:1px solid transparent;user-select:none;
+  height:41px;box-sizing:border-box;
   transition:background .18s,color .18s,border-color .18s,padding .22s ease}
 /* 收缩过程中文字被压扁时不换行（否则高度会瞬间变化），随宽度增加逐步露出 */
 .nav-item span{min-width:0;white-space:nowrap;overflow:hidden}
@@ -143,7 +143,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .nav-badge{margin-left:auto;background:var(--green);color:#04231a;font-size:10px;font-weight:700;
   padding:2px 7px;border-radius:99px}
 .side-foot{border-top:1px solid var(--stroke);padding:14px 10px 4px;font-size:11px;color:var(--txt3);
-  white-space:nowrap;overflow:hidden;transition:padding .22s ease}
+  white-space:nowrap;overflow:hidden;transition:padding .22s ease;
+  /* 展开是两行、收起只剩一个圆点：高度不定死就会差出 14px，圆点上下跳 */
+  height:54px;box-sizing:border-box}
 .side-foot .dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--green);
   margin-right:7px;box-shadow:0 0 8px var(--green);animation:pulse 2.4s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
@@ -387,13 +389,14 @@ td b{color:var(--txt);font-weight:600}
   <div class="logo">
     <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none">
       <defs>
-        <linearGradient id="ivShieldFace" x1="12" y1="2.2" x2="12" y2="21.9" gradientUnits="userSpaceOnUse">
-          <stop stop-color="#ffffff"/><stop offset="1" stop-color="#e4fff5"/>
+        <linearGradient id="ivFace" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#00bd78"/><stop offset="1" stop-color="#0089f2"/>
         </linearGradient>
       </defs>
-      <path fill="url(#ivShieldFace)" d="M12 2.2 19.5 6.5v5.2c0 5-3.25 8.7-7.5 10.15C7.75 20.4 4.5 16.7 4.5 11.7V6.5L12 2.2Z"/>
-      <path fill="#04281e" fill-opacity=".9" d="M12 7.5a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8Z"/>
-      <path fill="#04281e" fill-opacity=".9" d="M10.8 10.9h2.4l1.05 3.7a1.6 1.6 0 0 1-1.57 1.98h-1.36a1.6 1.6 0 0 1-1.57-1.98l1.05-3.7Z"/>
+      <rect x="10.5" y="3" width="8" height="14.7" rx="2.5" stroke="#fff" stroke-opacity=".42" stroke-width="1"/>
+      <path d="M13.15 15.3h2.7" stroke="#fff" stroke-opacity=".42" stroke-width=".9" stroke-linecap="round"/>
+      <rect x="5.5" y="6.3" width="8" height="14.7" rx="2.5" stroke="#fff" stroke-width="1.1" fill="url(#ivFace)"/>
+      <path d="M8.15 18.6h2.7" stroke="#fff" stroke-width=".9" stroke-linecap="round"/>
     </svg></div>
     <div><h1>i<em>Vault</em></h1><span>iPhone 备份中心</span></div>
   </div>
