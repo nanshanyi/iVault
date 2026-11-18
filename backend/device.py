@@ -373,16 +373,34 @@ class PairSession:
 
     async def run(self):
         loop = asyncio.get_event_loop()
-        # 阶段 1：等待设备插线（最多 5 分钟）
+        # 阶段 1：等待「新的」设备插线（最多 5 分钟）
+        #
+        # 关键：必须跳过已经配对并入库的设备。否则用户插着一台已配对的 iPhone 点
+        # 「添加新设备」，向导会立刻把老设备当成新设备，直接显示「设备已授权」，
+        # 看起来像「添加成功但其实什么都没加」。
+        from . import store
         deadline = loop.time() + 300
+        last_hint = 0.0
         while loop.time() < deadline:
             # 只挑 USB 设备：iPhone 的无线配对不被 idevicepair 支持
             # （官方 NOTE：network pairing 仅 Apple TV），无线只能备份已配对设备。
             usb = [d["udid"] for d in await scan_devices() if d["connection"] == TRANSPORT_USB]
-            if usb:
-                self.udid = usb[0]
+            known = {row["udid"] for row in store.list_devices()}
+            fresh = [u for u in usb if u not in known]
+            if fresh:
+                self.udid = fresh[0]
                 self.broadcast({"stage": "found", "udid": self.udid})
                 break
+            # 插着的都是老设备：明确告诉用户，而不是闷着等 5 分钟
+            if usb and loop.time() - last_hint > 4:
+                last_hint = loop.time()
+                self.broadcast({
+                    "stage": "waiting",
+                    "skipped": len(usb),
+                    "message": "当前插着的 " + str(len(usb)) + " 台设备都已完成配对。"
+                               "如果是要新增设备，请换一台没配过的 iPhone 插上；"
+                               "要给现有设备备份，直接回列表点「立即备份」。",
+                })
             await asyncio.sleep(1.5)
         else:
             self.stage = "error"

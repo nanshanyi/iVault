@@ -180,6 +180,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .step.on .t{color:var(--txt)}
 .step-line{position:absolute;top:17px;left:calc(-50% + 17px);right:calc(50% + 17px);height:2px;
   background:var(--stroke2);transition:.3s}
+/* 连接线画的是「到前一个步骤」的那一段，第一步前面没有节点，必须隐藏，
+   否则会离开容器左边界伸出去（top:17px + left:-50%） */
+.step:first-child .step-line{display:none}
 .step.done + .step .step-line{background:var(--green)}
 .wiz-body{min-height:190px;display:flex;flex-direction:column;align-items:center;justify-content:center;
   text-align:center;gap:14px}

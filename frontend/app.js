@@ -332,7 +332,19 @@ async function openWizard() {
   }
 }
 function onPairEvent(d) {
-  if (d.stage === 'waiting') return;              // 保持步骤 1
+  if (d.stage === 'waiting') {
+    // 插着的都是已配对设备时后端会带 message 说明，别让用户对着转圈干等
+    if (d.message) {
+      wizBody(
+        '<div class="big-ico detect-ring"><svg viewBox="0 0 24 24" fill="none" stroke="#f5b13d" stroke-width="1.6">' +
+        '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
+        '<h3>这些设备已经配对过了</h3>' +
+        '<p>' + esc(d.message) + '</p>' +
+        '<p style="color:var(--txt3);font-size:12.5px;margin-top:8px">正在继续等待新设备接入…</p>',
+        '<button class="btn ghost" onclick="closeWizard()">知道了</button>');
+    }
+    return;
+  }
   if (d.stage === 'found' || d.stage === 'pairing') {
     wizStep(2);
     const attempt = d.attempt || 0;
