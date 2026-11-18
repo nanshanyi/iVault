@@ -1,8 +1,12 @@
 name: Release image
 
-# 推 tag（v0.2.0 之类）时构建多架构镜像并推送到 GHCR，
+# 推 tag（v0.2.0 之类）时构建镜像并推送到 GHCR，
 # 用户在 NAS 上只需 docker compose pull，不必自己编译工具链。
-# 也可在 Actions 页面手动触发，指定只构建某个架构。
+#
+# 默认只构建 linux/amd64：绝大多数 NAS 是 x86（群晖 / 威联通 / 绿联 / 飞牛的主流机型），
+# arm64 在 GitHub 的 runner 上要走 QEMU 模拟，耗时多一倍以上。
+# 需要 ARM（树莓派、部分群晖、Apple Silicon 上的 Docker）时，在 Actions 页面手动触发，
+# platforms 填 "linux/amd64,linux/arm64"。
 
 on:
   push:
@@ -12,7 +16,7 @@ on:
       platforms:
         description: "目标架构（逗号分隔）"
         required: false
-        default: "linux/amd64,linux/arm64"
+        default: "linux/amd64"
 
 permissions:
   contents: read
@@ -40,8 +44,8 @@ jobs:
             version="sha-$(git rev-parse --short "${GITHUB_SHA}")"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "platforms=${INPUT_PLATFORMS:-linux/amd64,linux/arm64}" >> "$GITHUB_OUTPUT"
-          echo "building ${version} for ${INPUT_PLATFORMS:-linux/amd64,linux/arm64}"
+          echo "platforms=${INPUT_PLATFORMS:-linux/amd64}" >> "$GITHUB_OUTPUT"
+          echo "building ${version} for ${INPUT_PLATFORMS:-linux/amd64}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

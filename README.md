@@ -20,7 +20,7 @@
 
 <p align="center">
   <a href="https://github.com/nanshanyi/iVault/pkgs/container/ivault"><img src="https://img.shields.io/badge/image-ghcr.io%2Fnanshanyi%2Fivault-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white" alt="docker image"></a>
-  <img src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-2496ED?style=flat-square&amp;logo=linux&amp;logoColor=white" alt="platform">
+  <img src="https://img.shields.io/badge/platform-amd64-2496ED?style=flat-square&amp;logo=linux&amp;logoColor=white" alt="platform">
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="python">
   <img src="https://img.shields.io/badge/iOS-17%2B-000000?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="iOS">
 </p>
@@ -198,7 +198,9 @@ GET    /api/docs                   Swagger 文档
 
 ## 从源码构建
 
-正常部署**不需要编译**——CI 在推 tag 时构建 `linux/amd64` + `linux/arm64` 双架构镜像并推到 GHCR，NAS 上 pull 即可。只有改过代码或完全离线时才需要自己构建。
+正常部署**不需要编译**——CI 在推 tag 时构建 `linux/amd64` 镜像并推到 GHCR，NAS 上 pull 即可。只有改过代码或完全离线时才需要自己构建。
+
+需要 `linux/arm64`（树莓派、Apple Silicon 上的 Docker）时，到 Actions 页面手动运行 `Release image`，`platforms` 填 `linux/amd64,linux/arm64`——arm64 在 GitHub 的 runner 上要走 QEMU 模拟，耗时翻倍，所以没有放进默认流程。
 
 <details>
 <summary>展开：依赖构成与编译细节</summary>
