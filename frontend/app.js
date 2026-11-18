@@ -78,6 +78,7 @@ document.querySelectorAll('.nav-item').forEach(e => { e.onclick = () => go(e.dat
 /* ---------- 全局状态 ---------- */
 let state = { devices: [], snapshots: [], status: {}, settings: {} };
 let pairSource = null, jobSource = null, jobStartedAt = 0, logCount = 0, jobTick = null;
+let lastUnpairUdid = null;
 
 /* ---------- 热力图（最近 105 天，按完成日聚合） ---------- */
 function renderHeat(snaps) {
@@ -231,13 +232,54 @@ async function removeDevice(udid) {
   const tip = online
     ? '设备当前已连接：会同时通知 iPhone 撤销信任，之后需要重新点「信任」。'
     : '设备当前未连接：只能删除 NAS 上的配对证书，iPhone 里的信任会保留。\n' +
-      '想彻底撤销，请先把数据线插上再取消。';
+      '想彻底撤销，请先把数据线插上、解锁手机再取消。';
   if (!confirm('确定取消与「' + devName(udid) + '」的配对吗？\n\n' + tip + '\n\n已保存的备份不会被删除。')) return;
   try {
     const r = await api('/api/devices/' + encodeURIComponent(udid), { method: 'DELETE' });
-    toast(r.message || (r.trust_revoked ? '已解除配对并撤销信任' : '已删除 NAS 侧的配对记录'));
+    if (r.trust_revoked) {
+      hideDevNotice();
+      toast(r.message || '已解除配对并撤销信任');
+    } else {
+      // 撤销没真正生效是「需要用户动手」的事，用常驻提示条而不是一闪而过的 toast
+      showDevNotice(r.message, udid);
+      toast('已取消配对，但撤销信任未生效，请看上方说明');
+    }
     refresh();
   } catch (e) { toast('操作失败：' + e.message); }
+}
+
+function showDevNotice(text, udid) {
+  if (udid) lastUnpairUdid = udid;
+  $('devNoticeText').textContent = text;
+  $('devNotice').style.display = 'flex';
+  go('devices');
+}
+function hideDevNotice() {
+  $('devNotice').style.display = 'none';
+  lastUnpairUdid = null;
+}
+/* 撤销没生效时，用户解锁手机后可以直接重试，不用重新配对再取消 */
+async function retryUnpair() {
+  if (!lastUnpairUdid) { toast('没有可重试的设备'); return; }
+  const b = $('devNoticeRetry');
+  b.disabled = true;
+  b.textContent = '撤销中…';
+  try {
+    const r = await api('/api/devices/' + encodeURIComponent(lastUnpairUdid), { method: 'DELETE' });
+    if (r.trust_revoked) {
+      hideDevNotice();
+      toast(r.message || '已解除配对并撤销信任');
+    } else {
+      $('devNoticeText').textContent = r.message;
+      toast('仍未生效：请解锁 iPhone 后再试');
+    }
+    refresh();
+  } catch (e) {
+    toast('重试失败：' + e.message);
+  } finally {
+    b.disabled = false;
+    b.textContent = '重试撤销';
+  }
 }
 
 /* ---------- 配对向导（真实 SSE） ---------- */

@@ -193,21 +193,48 @@ async def unpair(udid: str) -> dict:
 
     这件事有两侧，必须分别处理：
       1. 设备侧：idevicepair unpair 通过 lockdownd 让 iPhone 删掉对本机的信任。
-         它要求设备在线，离线时必然失败——这是协议限制，无法绕过。
-      2. 本机侧：lockdown 目录下 <udid>.plist 是 NAS 持有的配对证书，必须无条件
-         删除。只要它还在，NAS 就仍能免信任访问手机，且重新添加设备时会被
-         validate 判定为「已授权」，用户永远等不到信任弹窗。
-    """
-    code, out = await _run([config.BIN_IDEVICEPAIR, "-u", udid, "unpair"], timeout=20)
-    device_ok = code == 0
-    purge = purge_local_pairing(udid)
-    purged = purge["ok"]
+         它要求设备在线且已解锁，离线/锁屏时无法生效。
+      2. 本机侧：lockdown 目录下 <udid>.plist 是 NAS 持有的配对证书，只要它还在，
+         NAS 就仍能免信任访问手机，且重新添加设备时会被 validate 判定为「已授权」。
 
-    if device_ok:
+    关键教训：**不能相信 idevicepair unpair 的退出码**。实测它会在什么都没删掉的
+    情况下打印 "SUCCESS: Unpaired with device"，退出码 0（例如手机锁屏、或证书文件
+    所在目录对当前用户不可写）。唯一可信的判据是再问一次设备：validate 还能不能过。
+    """
+    online = udid in await list_devices()
+    claimed, out = False, ""
+    purged, scan_error, failed = 0, None, []
+    still_paired, tool_broken = False, False
+
+    # 设备在线时最多试两轮：第一轮遇到锁屏/瞬时状态失败，第二轮通常能过
+    for attempt in range(2 if online else 1):
+        code, out = await _run([config.BIN_IDEVICEPAIR, "-u", udid, "unpair"], timeout=20)
+        claimed = claimed or code == 0
+        tool_broken = tool_broken or code in (126, 127)   # 工具链缺失，重试无意义
+        purge = purge_local_pairing(udid)                 # 每轮都再试一次删证书
+        purged, scan_error, failed = purge["ok"], purge["scan_error"], purge["failed"]
+        still_paired = await is_paired(udid) if online and not tool_broken else False
+        if not still_paired:
+            break
+        if attempt == 0:
+            await asyncio.sleep(0.8)
+
+    revoked = online and claimed and not still_paired and not tool_broken
+
+    if revoked:
         msg = "已解除配对：iPhone 上的信任记录与 NAS 的配对证书都已撤销，下次连接需要重新点「信任」。"
+    elif online and still_paired and not tool_broken:
+        # unpair 声称成功、但设备仍认可本机 → 撤销并未真正发生
+        msg = (
+            "撤销未生效：iPhone 仍保持着对这台 NAS 的信任（unpair 报告成功，但 validate 依然通过）。"
+            "常见原因是手机处于锁屏，或 NAS 无权删除本机证书。请解锁 iPhone 后重试；"
+            "若仍无效，请在手机上依次进入「设置 > 通用 > 传输或还原 iPhone > 还原 > 还原位置与隐私」，"
+            "清除后重新连接会正常弹出信任框。"
+        )
+        log.warning("unpair 假成功：设备 %s 仍 validate 通过（purged=%d）", udid, purged)
     else:
         reason = humanize_pair_error(out) or out.strip() or "设备无响应。"
-        if purge["scan_error"]:
+        if scan_error:
             head = "本机的配对证书目录读取失败，"
         elif purged:
             head = "已删除 NAS 上的配对证书，但"
@@ -216,16 +243,16 @@ async def unpair(udid: str) -> dict:
         msg = (
             head + "设备没有收到撤销指令——" + reason +
             " iPhone 里仍保留对这台 NAS 的信任，下次插线添加设备时可能不再弹窗。"
-            "要彻底撤销，请插上数据线后再取消一次，或在手机上依次进入"
+            "要彻底撤销，请插上数据线、解锁手机后再取消一次，或在手机上依次进入"
             "「设置 > 通用 > 传输或还原 iPhone > 还原 > 还原位置与隐私」。"
         )
         log.info("unpair 未送达设备（%s），本机清理证书 %d 个", reason, purged)
-    if purge["scan_error"]:
-        msg += "（" + purge["scan_error"] + "；容器内以 root 运行才能清理证书）"
-    elif purge["failed"]:
-        msg += "（另有 " + str(len(purge["failed"])) + " 个证书文件删除失败：" + purge["failed"][0] + "）"
-    return {"trust_revoked": device_ok, "purged": purged, "message": msg}
-    return {"trust_revoked": device_ok, "purged": purged, "message": msg}
+
+    if scan_error:                        # 撤销已生效时证书残留也要说清楚
+        msg += "（" + scan_error + "；容器内以 root 运行才能清理证书）"
+    elif failed:
+        msg += "（另有 " + str(len(failed)) + " 个证书文件删除失败：" + failed[0] + "）"
+    return {"trust_revoked": revoked, "purged": purged, "online": online, "message": msg}
 
 
 # ---------- 配对向导会话 ----------
