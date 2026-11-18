@@ -140,5 +140,3 @@ GET    /api/docs                   Swagger 文档
 - [razeencheng/iosbackup](https://github.com/razeencheng/iosbackup) — Go 实现，官方镜像，定时/Wi-Fi/通知
 - [JerryGHT04/ios-backup-station](https://github.com/JerryGHT04/ios-backup-station) — Python 实现，飞牛 fnOS 社区
 - [libimobiledevice](https://libimobiledevice.org/) — iOS 协议开源实现
-
-以及飞牛 fnOS 官方「iPhone 备份」应用的产品交互拆解（闭源，仅作 UX 参考）。
