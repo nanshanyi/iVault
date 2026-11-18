@@ -611,6 +611,15 @@ function wireSettings() {
   syncTimeBox();
 }
 
+/* 侧栏底部：服务状态 + 真实系统版本 + 版本号（都不写死） */
+function renderSideFoot(offline) {
+  const st = state.status || {};
+  $('sideDot').classList.toggle('off', !!offline);
+  $('sideState').textContent = offline ? '服务连接中断' : '服务运行中';
+  $('sideOs').textContent = !offline && st.os_name ? ' · ' + st.os_name : '';
+  $('sideVer').textContent = 'iVault' + (st.version ? ' v' + st.version : '');
+}
+
 /* ---------- 初始化 ---------- */
 async function refresh() {
   try {
@@ -619,13 +628,16 @@ async function refresh() {
     ]);
     state.status = st; state.devices = devs; state.snapshots = snaps; state.settings = settings;
     renderDashboard(); renderDevices(); renderHistory(); renderLibrary(); renderSettings();
+    renderSideFoot(false);
     $('setPath').textContent = st.backup_dir || '—';
-    $('aboutText').textContent = 'iVault v' + st.version + ' · 备份目录 ' + st.backup_dir;
+    $('aboutText').textContent = 'iVault v' + st.version + (st.os_name ? ' · ' + st.os_name : '') + ' · 备份目录 ' + st.backup_dir;
     $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' + (st.active_jobs || []).length + ' 个进行中任务';
   } catch (e) {
+    renderSideFoot(true);
     toast('连接后端失败：' + e.message);
   }
 }
+renderSideFoot(true);   // 首屏在首个请求回来之前保持「未连接」的真实状态
 wireSettings();
 refresh();
 setInterval(refresh, 6000);

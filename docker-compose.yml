@@ -25,6 +25,9 @@ services:
       # 配对证书：libimobiledevice 由 usbmuxd 把记录固定写到 /var/lib/lockdown，
       # 必须挂到持久卷，否则容器重建后需要重新插线配对
       - ${META_LOCATION:-/volume1/ivault/data}/lockdown:/var/lib/lockdown
+      # 只读挂入宿主机的系统标识，用于在界面上显示真实的 NAS 系统版本（UGOS x.y）。
+      # 容器内的 /etc/os-release 是 Debian 的，不能用；读不到时界面会自动隐藏这段。
+      - /etc/os-release:/host-os-release:ro
     restart: unless-stopped
     logging:
       options:

@@ -31,6 +31,41 @@ app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
 _pair_sessions: dict[str, device.PairSession] = {}
 _state = {"online_devices": [], "boot_at": time.time()}
 
+# 宿主机系统标识的候选来源（compose 会把宿主机 /etc/os-release 只读挂到第一个）
+_OS_FILES = ("/host-os-release", "/etc/ugos-release", "/etc/ugos_version", "/etc/os-release")
+
+
+def detect_os_name() -> str | None:
+    """识别 NAS 的系统名与版本，识别不出返回 None。
+
+    容器内的 /etc/os-release 是 Debian 的镜像信息，直接显示会误导用户
+    （界面上写着「Debian 13」而设备其实是绿联 UGOS），所以只有内容确实提到
+    UGOS/绿联时才采用，否则前端隐藏这段，只显示服务状态与版本号。
+    """
+    env = os.environ.get("IVAULT_OS_NAME", "").strip()
+    if env:
+        return env
+    for path in _OS_FILES:
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if not re.search(r"ugos|绿联|ugreen", text, re.I) and "ugos" not in os.path.basename(path).lower():
+            continue
+        fields = dict(re.findall(r"^\s*([A-Z_]+)\s*=\s*(.+?)\s*$", text, re.M))
+        pretty = (fields.get("PRETTY_NAME") or "").strip().strip('"')
+        ver = (fields.get("VERSION_ID") or "").strip().strip('"')
+        if pretty.upper().startswith("UGOS"):
+            return pretty
+        if ver:
+            return "UGOS " + ver
+        # /etc/ugos_version 之类的纯文本文件：取第一行有效内容
+        for line in text.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" not in line:
+                return ("UGOS " + line) if re.match(r"^[\d.]+$", line) else line
+    return None
+
 
 def sse_response(queue_gen):
     return StreamingResponse(
@@ -88,6 +123,7 @@ async def status():
     disk_free = shutil_disk_free(config.BACKUP_DIR)
     return {
         "version": VERSION,
+        "os_name": detect_os_name(),
         "uptime_s": int(time.time() - _state["boot_at"]),
         "online_devices": _state["online_devices"],
         "active_jobs": jobs.active_jobs(),
