@@ -174,8 +174,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
   border-color:rgba(0,196,127,.35);box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 40px rgba(0,196,127,.08);
   animation:wizpop .24s cubic-bezier(.2,.9,.3,1.1)}
 @keyframes wizpop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
-.wiz-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:9px;border:1px solid transparent;
-  background:transparent;color:var(--txt3);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.18s}
+.wiz-close{position:absolute;top:12px;right:12px;z-index:3;width:30px;height:30px;border-radius:9px;
+  border:1px solid transparent;background:transparent;color:var(--txt3);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:.18s}
 .wiz-close svg{width:14px;height:14px}
 .wiz-close:hover{background:var(--card-hover);border-color:var(--stroke);color:var(--txt)}
 @media (max-width:1000px){.wiz-overlay{padding:20px 20px 20px calc(var(--side-w) + 20px)}}
@@ -531,9 +532,6 @@ td b{color:var(--txt);font-weight:600}
 <!-- 配对向导：覆盖在主区上方的浮层（不参与页面布局，避免撑变卡片宽度） -->
 <div class="wiz-overlay" id="wizard" style="display:none">
   <div class="card wizard" role="dialog" aria-modal="true" aria-label="添加设备">
-    <button class="wiz-close" onclick="closeWizard()" title="关闭">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
-    </button>
     <div class="steps">
       <div class="step on" id="st1"><div class="step-line"></div><div class="c">1</div><div class="t">连接</div></div>
       <div class="step" id="st2"><div class="step-line"></div><div class="c">2</div><div class="t">信任</div></div>
@@ -541,6 +539,10 @@ td b{color:var(--txt);font-weight:600}
     </div>
     <div class="wiz-body" id="wizBody"></div>
     <div class="wiz-actions" id="wizActions"></div>
+    <!-- 关闭按钮放最后：绝对定位不影响视觉位置，但 DOM 顺序靠后可确保压在步骤条之上 -->
+    <button class="wiz-close" onclick="closeWizard()" title="关闭（Esc）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
   </div>
 </div>
 <div class="toast" id="toast"></div>

@@ -413,7 +413,8 @@ function onPairEvent(d) {
   }
 }
 function closeWizard() {
-  if (pairSource) { pairSource.close(); pairSource = null; }
+  // 关 SSE 放在 try 里：任何异常都不能挡住浮层消失
+  try { if (pairSource) { pairSource.close(); pairSource = null; } } catch (e) { /* ignore */ }
   $('wizard').style.display = 'none';
   document.body.style.overflow = '';
 }
