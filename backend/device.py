@@ -22,10 +22,20 @@ async def _run(args: list[str], timeout=30) -> tuple[int, str]:
             # 配对记录由 usbmuxd 的 --config-dir 决定（见 scripts/entrypoint.sh），
             # 不通过环境变量覆盖——libimobiledevice 工具链不识别这类变量。
         )
+    except FileNotFoundError:
+        # 裸机/本地开发未装工具链时给出可诊断信息，而不是让任务崩掉
+        return 127, f"未找到可执行文件 {args[0]}，请确认 libimobiledevice 已安装"
+    except Exception as e:  # noqa: BLE001
+        return 126, f"启动 {args[0]} 失败：{e}"
+    try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return proc.returncode, out.decode(errors="replace")
     except asyncio.TimeoutError:
-        proc and proc.kill()
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:  # noqa: BLE001
+            pass
         return -1, f"timeout: {' '.join(args)}"
 
 
@@ -66,16 +76,74 @@ async def is_paired(udid: str) -> bool:
     return code == 0
 
 
-async def pair(udid: str, timeout=120) -> tuple[bool, str]:
-    """发起配对。设备上弹出「信任此电脑」后命令返回。"""
+def _is_waiting_trust(text: str) -> bool:
+    """判断配对失败是否应当继续重试。
+
+    libimobiledevice 的 idevicepair pair 不会阻塞等用户点信任，未授权时立即返回，
+    因此必须循环重试。这里采用「黑名单」策略：只有工具链缺失、权限不足这类
+    真正无解的错误才终止，其余（未点信任/误点不信任/弹窗超时/lockdownd 未就绪）
+    都继续等待——因为配对本质是需要人工介入的过程，重试成本极低。
+    """
+    t = text.lower()
+    hard = (
+        "command not found",
+        "no such file or directory",
+        "permission denied",
+        "operation not permitted",
+    )
+    return not any(k in t for k in hard)
+
+
+def _is_denied(text: str) -> bool:
+    """是否已被设备端明确拒绝。
+
+    这种状态下重试无效——iOS 会记住拒绝、不再弹窗，必须重新插拔数据线。
+    """
+    t = text.lower()
+    return any(k in t for k in (
+        "denied the trust dialog",
+        "user did not allow trust",
+        "user denied",
+    ))
+
+
+def humanize_pair_error(text: str) -> str:
+    """把 libimobiledevice 的英文错误转成可操作的中文提示。"""
+    t = text.lower()
+    table = (
+        ("denied the trust dialog", "手机端拒绝了信任请求。请重新插线，在看到「要信任此电脑吗」时点「信任」并输入锁屏密码。"),
+        ("please accept the trust dialog", "手机上还有未确认的信任弹窗。请解锁手机，点「信任」并输入锁屏密码。"),
+        ("user did not allow trust", "手机端拒绝了信任。请重新插线，在弹窗中点「信任」。"),
+        ("pairing dialog response pending", "信任弹窗还在等待确认，请在手机上点「信任」。"),
+        ("could not connect to lockdownd", "无法连接设备服务（lockdownd）。请解锁手机、重新插拔数据线后重试。"),
+        ("device is locked", "设备处于锁屏状态。请解锁 iPhone 后重试。"),
+        ("invalid hostid", "配对记录无效，请重新插拔数据线再试一次。"),
+        ("device not found", "设备已断开。请确认数据线仍连接在 NAS 的 USB 口上。"),
+    )
+    for key, zh in table:
+        if key in t:
+            return zh
+    return text.strip()
+
+
+async def pair(udid: str, timeout=60) -> tuple[bool, str, bool]:
+    """发起一次配对尝试。
+
+    返回 (是否成功, 输出信息, 是否属于可重试的「等待信任」状态)。
+    """
     code, out = await _run(
         [config.BIN_IDEVICEPAIR, "-u", udid, "pair"], timeout=timeout
     )
+    text = out.strip()
     if code == 0:
-        return True, out.strip() or "paired"
-    if "already paired" in out.lower():
-        return True, "already paired"
-    return False, out.strip()
+        return True, text or "paired", False
+    low = text.lower()
+    if "already paired" in low:
+        return True, "already paired", False
+    if code in (126, 127):
+        # 工具链缺失 / 无法启动：重试没有意义
+        return False, text or f"idevicepair 无法执行（退出码 {code}）", False
+    return False, text or f"idevicepair 退出码 {code}", _is_waiting_trust(text)
 
 
 async def unpair(udid: str) -> bool:
@@ -99,9 +167,11 @@ class PairSession:
         self.udid: str | None = None
         self.info: dict = {}
         self.task: asyncio.Task | None = None
+        self.last_event: dict | None = None
 
     def broadcast(self, event: dict):
         event.setdefault("stage", self.stage)
+        self.last_event = event          # 供后加入的订阅者补发完整快照
         log.info("pair[%s] %s", self.sid[:8], event)
         for q in list(self.subscribers):
             try:
@@ -118,31 +188,8 @@ class PairSession:
         if q in self.subscribers:
             self.subscribers.remove(q)
 
-    async def run(self):
-        # 阶段 1：等待设备插线（最多 5 分钟）
-        deadline = asyncio.get_event_loop().time() + 300
-        while asyncio.get_event_loop().time() < deadline:
-            udids = await list_devices()
-            if udids:
-                self.udid = udids[0]
-                self.broadcast({"stage": "found", "udid": self.udid})
-                break
-            await asyncio.sleep(1.5)
-        else:
-            self.stage = "error"
-            self.broadcast({"stage": "error", "message": "5 分钟内未检测到 USB 设备"})
-            return
-
-        self.stage = "pairing"
-        self.broadcast({"stage": "pairing", "udid": self.udid,
-                        "hint": "请在 iPhone 上点击「信任此电脑」"})
-        # 阶段 2：pair 命令会阻塞直到用户点信任（或超时）
-        ok, msg = await pair(self.udid, timeout=150)
-        if not ok:
-            self.stage = "error"
-            self.broadcast({"stage": "error", "udid": self.udid, "message": msg})
-            return
-        # 阶段 3：读取设备信息入库
+    async def _finish_done(self, already: bool):
+        """读取设备信息入库并宣告完成。"""
         self.info = await device_info(self.udid)
         from . import store
         store.upsert_device(
@@ -158,7 +205,122 @@ class PairSession:
             "name": self.info.get("DeviceName", ""),
             "model": self.info.get("ProductType", ""),
             "ios_version": self.info.get("ProductVersion", ""),
+            "already_paired": already,
+        })
+
+    async def run(self):
+        loop = asyncio.get_event_loop()
+        # 阶段 1：等待设备插线（最多 5 分钟）
+        deadline = loop.time() + 300
+        while loop.time() < deadline:
+            udids = await list_devices()
+            if udids:
+                self.udid = udids[0]
+                self.broadcast({"stage": "found", "udid": self.udid})
+                break
+            await asyncio.sleep(1.5)
+        else:
+            self.stage = "error"
+            self.broadcast({
+                "stage": "error",
+                "message": "5 分钟内未检测到 iOS 设备。请确认：数据线插在 NAS 机身 USB 口、"
+                           "手机已解锁、iOS 设备未处于「只充电」模式。",
+            })
+            return
+
+        # 阶段 2：已配对的设备直接完成——不需要也没有信任弹窗可点
+        if await is_paired(self.udid):
+            self.stage = "pairing"
+            self.broadcast({"stage": "pairing", "udid": self.udid,
+                            "hint": "该设备已授权过，正在读取设备信息…"})
+            await self._finish_done(already=True)
+            return
+
+        # 阶段 3：等待用户在手机上点「信任」
+        # idevicepair pair 不会阻塞等待，未授权时立即返回，因此循环重试。
+        #
+        # 关键细节：一旦用户在弹窗上点了「不信任」或超时未输密码，iOS 会记住
+        # 「该主机已被拒绝」，之后重试会被直接拒绝且不再弹窗。此时唯一有效的
+        # 办法是重新插拔数据线（设备重连会重置拒绝状态）。所以这里同时监听
+        # 设备是否掉线，检测到重新插入就立即重试并重置计数。
+        deadline = loop.time() + 300
+        attempt = 0
+        last_msg = ""
+        denied_hits = 0
+        plugged = True
+        self.stage = "pairing"
+        self.broadcast({"stage": "pairing", "udid": self.udid, "attempt": 0,
+                        "waiting_trust": True,
+                        "hint": "请在 iPhone 上点击「信任此电脑」"})
+        while loop.time() < deadline:
+            # 先确认设备还在线上：拔线是用户看到「不弹窗」后最自然的动作
+            udids = await list_devices()
+            if self.udid not in udids:
+                if plugged:
+                    plugged = False
+                    self.broadcast({
+                        "stage": "pairing", "udid": self.udid,
+                        "waiting_trust": True, "unplugged": True,
+                        "remaining": int(deadline - loop.time()),
+                        "hint": "设备已断开，等待重新插入",
+                        "message": "检测到数据线已拔出。请把 iPhone 重新插回 NAS 的 USB 口，"
+                                   "保持屏幕解锁，插上后会自动继续配对。",
+                    })
+                await asyncio.sleep(1.5)
+                continue
+            if not plugged:
+                plugged = True
+                attempt = 0
+                denied_hits = 0
+                self.broadcast({
+                    "stage": "pairing", "udid": self.udid,
+                    "waiting_trust": True, "replugged": True,
+                    "remaining": int(deadline - loop.time()),
+                    "hint": "已重新连接，正在请求信任弹窗…",
+                    "message": "设备已重新连接，已重新请求配对。请留意手机上的「要信任此电脑吗」弹窗。",
+                })
+
+            ok, msg, retryable = await pair(self.udid, timeout=30)
+            if ok:
+                await self._finish_done(already=False)
+                return
+            last_msg = msg
+            if not retryable:
+                self.stage = "error"
+                self.broadcast({"stage": "error", "udid": self.udid,
+                                "message": humanize_pair_error(msg), "retryable": False})
+                return
+            attempt += 1
+            denied = _is_denied(msg)
+            if denied:
+                denied_hits += 1
+            self.broadcast({
+                "stage": "pairing", "udid": self.udid, "attempt": attempt,
+                "waiting_trust": True,
+                "denied": denied,
+                "remaining": int(deadline - loop.time()),
+                "hint": ("手机端此前拒绝了信任，请拔掉数据线重新插入" if denied
+                         else "仍在等待 iPhone 上的「信任」确认"),
+                "message": (
+                    "手机上没有出现弹窗？这是因为上一次点过「不信任」或密码框超时，"
+                    "iOS 记住了这次拒绝，之后不会再弹。请拔掉数据线，重新插一次，"
+                    "看到「要信任此电脑吗」时点「信任」并输入锁屏密码。"
+                    if denied else ""),
+            })
+            await asyncio.sleep(2.5)
+
+        self.stage = "error"
+        self.broadcast({
+            "stage": "error", "udid": self.udid, "retryable": True,
+            "message": "5 分钟内未完成配对。请解锁 iPhone、保持数据线连接；"
+                       "若手机没有弹窗，请拔掉数据线重新插入后重试。"
+                       + (f"（最后错误：{humanize_pair_error(last_msg)}）" if last_msg else ""),
         })
 
     def start(self):
         self.task = asyncio.create_task(self.run())
+
+    def cancel(self):
+        """终止轮询任务。配对是设备级的独占操作，同一时间只应有一个会话。"""
+        if self.task and not self.task.done():
+            self.task.cancel()

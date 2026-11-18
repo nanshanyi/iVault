@@ -131,6 +131,11 @@ async def remove_device(udid: str):
 
 @app.post("/api/pair/begin")
 async def pair_begin():
+    # 配对是设备级独占操作（lockdownd 同一时刻只能进行一次配对握手），
+    # 多个会话并发会互相打断，导致谁都配不上。这里保证同一时间只有一个会话。
+    for old in list(_pair_sessions.values()):
+        old.cancel()
+    _pair_sessions.clear()
     sid = uuid.uuid4().hex
     s = device.PairSession(sid)
     _pair_sessions[sid] = s
@@ -144,7 +149,13 @@ async def pair_events(sid: str):
     if not s:
         raise HTTPException(404, "session 不存在或已过期")
     q = s.subscribe()
-    s.broadcast({"stage": s.stage, "udid": s.udid})  # 让后加入的订阅者拿到当前阶段
+    # 补发当前阶段快照：必须是完整的 last_event（含 message/remaining 等字段），
+    # 只推给新订阅者，避免给已有订阅者重复广播。
+    snap = s.last_event or {"stage": s.stage, "udid": s.udid}
+    try:
+        q.put_nowait(snap)
+    except Exception:  # noqa: BLE001
+        pass
 
     async def gen():
         try:

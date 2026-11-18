@@ -106,6 +106,11 @@ docker compose pull && docker compose up -d --no-build
 3. **立即备份**：进度、实时日志由 SSE 推送；**进度到 100% 后仍需等待后端写快照完成**
    （以页面提示/任务状态为准），再拔线
 
+> ⚠️ **手机没有弹窗？拔掉数据线重新插一次。**
+> 在弹窗上点过「不信任」，或密码框超时未输入，iOS 会记住「这台电脑已被拒绝」，
+> 之后 `idevicepair` 一律直接返回 `user denied the trust dialog`，**不会再弹窗**。
+> 断电重连会重置这个状态。配对向导能识别这种情况并明确提示拔插线，插回后会自动重试。
+
 > ⚠️ 配对证书由 `usbmuxd --config-dir /var/lib/lockdown` 写入，compose 已把宿主机
 > `META_LOCATION/lockdown` 挂到该路径。务必持久化此目录：容器删除重建后只要它还在，
 > 就不需要重新插线配对。
@@ -192,8 +197,11 @@ GET    /api/docs                   Swagger 文档
    若遇到新 iOS 不兼容，把这些 SHA 换成更新的版本后重新构建、真机验证一次即可。
 5. UGOS 的 Docker 需允许 `privileged` 容器与 `/dev/bus/usb` 映射；
    若你的系统策略禁止，可改装宿主 `usbmuxd` 并把 socket 挂进容器。
-6. **尚未在真机 / UGOS 上验证**：镜像构建、容器 USB 透传、配对与备份链路均未实测，
-   首次部署属于 M0 验证，需把 iPhone 用数据线插到 NAS 上配合测试。
+6. **验证状态**：
+   - ✅ **配对链路已在真机验证**（iPhone Xs / iOS 18.7.12）：设备发现 → 信任授权 →
+     证书落地 → 入库，含「未弹窗需拔插线」的排障路径
+   - ⬜ 镜像构建、UGOS 容器内的 USB 透传、`idevicebackup2` 备份落盘仍未实测
+   - 首次部署仍属 M0 验证，需把 iPhone 用数据线插到 NAS 上配合测试
 
 ---
 

@@ -253,33 +253,76 @@ function onPairEvent(d) {
   if (d.stage === 'waiting') return;              // 保持步骤 1
   if (d.stage === 'found' || d.stage === 'pairing') {
     wizStep(2);
+    const attempt = d.attempt || 0;
+    const alreadyHint = d.hint && d.hint.indexOf('已授权') >= 0;
+    // 三种需要用户动手的状态：已授权读取中 / 已断线 / 被拒绝需重插
+    let title = '在 iPhone 上点击「信任」', tone = '#00e59b';
+    if (alreadyHint) { title = '设备已授权，正在读取信息'; }
+    else if (d.unplugged) { title = '数据线已拔出，请重新插入'; tone = '#f5b13d'; }
+    else if (d.replugged) { title = '已重新连接，正在请求弹窗'; }
+    else if (d.denied) { title = '手机上没弹窗？拔掉数据线重插一次'; tone = '#f5b13d'; }
+    else if (attempt > 0) { title = '仍等待 iPhone 上的「信任」确认'; }
+
+    let detail;
+    if (alreadyHint) {
+      detail = '<p>' + esc(d.hint) + '</p>';
+    } else if (d.message) {
+      // 后端给出的针对性引导优先（拔插线 / 拒绝原因）
+      detail = '<p>' + esc(d.message) + '</p>';
+    } else if (d.unplugged) {
+      detail = '<p>检测到数据线已断开。请把 iPhone 重新插回 NAS 的 USB 口，保持屏幕解锁，插上后会自动继续。</p>';
+    } else {
+      detail = '<p>已检测到设备 <b style="color:var(--green2)">' + esc(d.udid ? d.udid.slice(-8) : 'iOS 设备') + '</b>。' +
+        '请解锁手机，在看到「要信任此电脑吗」时点 <b>「信任」</b> 并输入锁屏密码。' +
+        '<br><span style="color:var(--txt3);font-size:12.5px">NAS 只保存配对证书，不读取你的锁屏密码。</span></p>';
+    }
+
+    const check = '<div class="phone-check">' +
+      '<span class="' + (d.unplugged ? '' : 'hit') + '">① 设备' + (d.unplugged ? '已断开' : '已识别') + '</span>' +
+      '<span class="' + (d.denied || d.unplugged ? '' : 'hit') + '">② 等待信任确认</span>' +
+      '<span>③ 交换配对证书</span></div>';
+    const footer = attempt > 0
+      ? '<p style="margin-top:10px;font-size:12px;color:var(--txt3)">已重试 ' + attempt + ' 次' +
+        (d.remaining != null ? ' · 剩余 ' + d.remaining + ' 秒' : '') +
+        '，完成手机上的确认后会自动继续，无需刷新页面</p>'
+      : '';
+
     wizBody(
-      '<div class="big-ico detect-ring"><svg viewBox="0 0 24 24" fill="none" stroke="#00e59b" stroke-width="1.7"><path d="M12 21s-7.5-4.6-9.5-9A5.4 5.4 0 0112 6.2 5.4 5.4 0 0121.5 12c-2 4.4-9.5 9-9.5 9z"/></svg></div>' +
-      '<h3>在 iPhone 上点击「信任」</h3>' +
-      '<p>已检测到设备 <b style="color:var(--green2)">' + esc(d.udid ? d.udid.slice(-8) : 'iOS 设备') + '</b>。请在手机弹窗中选择「信任此电脑」并输入锁屏密码。NAS 只保存配对证书，不读取锁屏密码。</p>' +
-      '<div class="phone-check"><span class="hit">① 设备已识别</span><span class="hit">② 等待信任确认</span><span>③ 交换配对证书</span></div>',
+      '<div class="big-ico detect-ring"><svg viewBox="0 0 24 24" fill="none" stroke="' + tone + '" stroke-width="1.7">' +
+      (d.unplugged
+        ? '<path d="M12 3v6m0 0a3 3 0 000 6v6"/><path d="M5 5l14 14"/>'
+        : '<path d="M12 21s-7.5-4.6-9.5-9A5.4 5.4 0 0112 6.2 5.4 5.4 0 0121.5 12c-2 4.4-9.5 9-9.5 9z"/>') +
+      '</svg></div>' +
+      '<h3>' + title + '</h3>' + detail + check + footer,
       '<button class="btn ghost" onclick="closeWizard()">取消</button>');
     return;
   }
   if (d.stage === 'done') {
     if (pairSource) { pairSource.close(); pairSource = null; }
     wizStep(3);
+    const already = d.already_paired;
     wizBody(
       '<div class="big-ico" style="background:linear-gradient(135deg,rgba(0,196,127,.3),rgba(0,229,155,.2));box-shadow:0 8px 30px rgba(0,196,127,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="#00e59b" stroke-width="2.2"><path d="M4 12.5l5 5L20 6.5"/></svg></div>' +
-      '<h3>配对成功 🎉</h3>' +
-      '<p><b>' + esc(d.name || '设备') + '</b>（iOS ' + esc(d.ios_version || '?') + '）已与 NAS 建立永久信任。配对证书已持久化保存，之后插线或同局域网 Wi-Fi 均可直接备份。</p>' +
+      '<h3>' + (already ? '设备已授权 ✓' : '配对成功 🎉') + '</h3>' +
+      '<p><b>' + esc(d.name || '设备') + '</b>（iOS ' + esc(d.ios_version || '?') + '）' +
+      (already
+        ? '此前已与本机建立信任，无需重新确认，可直接开始备份。'
+        : '已与 NAS 建立永久信任。配对证书已持久化保存，之后插线或同局域网 Wi-Fi 均可直接备份。') + '</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center"><span class="badge g">✓ 证书持久化</span><span class="badge b">建议开启定时备份</span></div>',
       '<button class="btn" onclick="closeWizard()">完成</button><button class="btn primary" onclick="closeWizard();startBackup(\'' + esc(d.udid) + '\')">立即备份一次</button>');
-    toast('配对成功：' + (d.name || '设备'));
+    toast((already ? '设备已就绪：' : '配对成功：') + (d.name || '设备'));
     refresh();
     return;
   }
   if (d.stage === 'error') {
     if (pairSource) { pairSource.close(); pairSource = null; }
+    const soft = d.retryable;   // 等信任超时属于可重试的引导态，不是硬失败
     wizBody(
-      '<div class="big-ico"><svg viewBox="0 0 24 24" fill="none" stroke="#ff5d6c" stroke-width="1.8"><path d="M12 8v5m0 3h.01"/><circle cx="12" cy="12" r="9"/></svg></div>' +
-      '<h3>配对未完成</h3><p>' + esc(d.message || '请重新插线并在手机上点「信任」') + '</p>',
-      '<button class="btn" onclick="closeWizard()">关闭</button><button class="btn primary" onclick="openWizard()">重新配对</button>');
+      '<div class="big-ico"><svg viewBox="0 0 24 24" fill="none" stroke="' + (soft ? '#f5b13d' : '#ff5d6c') + '" stroke-width="1.8"><path d="M12 8v5m0 3h.01"/><circle cx="12" cy="12" r="9"/></svg></div>' +
+      '<h3>' + (soft ? '还没收到信任确认' : '配对失败') + '</h3>' +
+      '<p>' + esc(d.message || '请重新插线并在手机上点「信任」') + '</p>',
+      '<button class="btn" onclick="closeWizard()">关闭</button>' +
+      '<button class="btn primary" onclick="openWizard()">' + (soft ? '重新等待' : '重试') + '</button>');
   }
 }
 function closeWizard() {
