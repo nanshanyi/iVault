@@ -2,7 +2,7 @@
 
 启动流程：
   uvicorn ivault.main:app --host 0.0.0.0 --port 8666
-容器 entrypoint 会先拉起 usbmuxd（USB）与 netmuxd（Wi-Fi，可选）。
+容器 entrypoint 会先拉起 usbmuxd（USB 通道 + 配对证书目录），再启动本服务。
 """
 import asyncio
 import datetime

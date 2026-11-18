@@ -1,6 +1,9 @@
 services:
   ivault:
-    build: .
+    build:
+      context: .
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
     image: ivault:local
     container_name: ivault
     # 访问 USB 总线是 iPhone 配对与整机备份的硬性前提
@@ -15,8 +18,11 @@ services:
     volumes:
       # 备份库：Apple MobileSync 格式，含每台 UDID 的完整数据目录
       - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（NAS 上的备份目录绝对路径）}:/data/backups
-      # 元数据：SQLite + 配对证书 lockdown（务必持久化，丢失需重新插线配对）
+      # 元数据：SQLite 数据库
       - ${META_LOCATION:-/volume1/ivault/data}:/data/meta
+      # 配对证书：libimobiledevice 由 usbmuxd 把记录固定写到 /var/lib/lockdown，
+      # 必须挂到持久卷，否则容器重建后需要重新插线配对
+      - ${META_LOCATION:-/volume1/ivault/data}/lockdown:/var/lib/lockdown
     restart: unless-stopped
     logging:
       options:

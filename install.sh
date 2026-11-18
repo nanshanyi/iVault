@@ -21,7 +21,7 @@ META_LOCATION="${META_LOCATION:-$(dirname "$BACKUP_LOCATION")/data}"
 read -r -p "Web 端口（默认 8666）: " IVAULT_PORT
 IVAULT_PORT="${IVAULT_PORT:-8666}"
 
-mkdir -p "$BACKUP_LOCATION" "$META_LOCATION" || {
+mkdir -p "$BACKUP_LOCATION" "$META_LOCATION" "$META_LOCATION/lockdown" || {
     echo "✗ 无法创建目录，请确认路径有效且当前用户有写权限"; exit 1
 }
 
@@ -32,11 +32,13 @@ IVAULT_PORT=${IVAULT_PORT}
 EOF
 echo "✓ 已写入 .env"
 
-echo "==> 构建并启动（首次约 2-5 分钟）"
+echo "==> 构建并启动（首次约 10–20 分钟，需从上游源码编译 libimobiledevice 全栈）"
+echo "    国内网络慢可加：APT_MIRROR=mirrors.ustc.edu.cn ./install.sh"
 docker compose up -d --build
 
 IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<NAS-IP>")
 echo ""
 echo "✓ iVault 已启动：http://${IP}:${IVAULT_PORT}"
 echo "  下一步：用数据线把 iPhone 插到 NAS 的 USB 口，打开网页 → 设备管理 → 添加设备"
+echo "  验证工具链：docker exec ivault idevice_id -l（插线后应列出 UDID）"
 echo "  查看日志：docker compose logs -f ivault"

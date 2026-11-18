@@ -5,7 +5,10 @@ import os
 DATA_DIR = os.environ.get("IVAULT_DATA", "/data/meta")
 BACKUP_DIR = os.environ.get("IVAULT_BACKUPS", "/data/backups")
 DB_PATH = os.path.join(DATA_DIR, "ivault.db")
-LOCKDOWN_DIR = os.environ.get("IVAULT_LOCKDOWN", "/data/meta/lockdown")
+# 配对证书目录：libimobiledevice 的配对记录由 usbmuxd 管理，
+# entrypoint 用 --config-dir 指向这里；compose 把宿主机 ${META_LOCATION}/lockdown 挂到该路径。
+# 注意：不要用环境变量去改 idevice_* 工具的证书路径，它们不认这类变量。
+LOCKDOWN_DIR = os.environ.get("IVAULT_LOCKDOWN", "/var/lib/lockdown")
 
 HOST = os.environ.get("IVAULT_HOST", "0.0.0.0")
 PORT = int(os.environ.get("IVAULT_PORT", "8666"))

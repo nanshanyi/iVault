@@ -13,26 +13,69 @@ Finder / iTunes 同格式的 **Apple MobileSync 全量与增量备份**，通过
 
 ---
 
+## 依赖（三层，全部由 Dockerfile 自动安装）
+
+| 层 | 依赖 | 安装方式 |
+|---|---|---|
+| 前端 | **零第三方库**：原生 HTML / CSS / JS，无 npm、无框架、无 CDN | 随镜像静态托管 |
+| Python 后端 | `fastapi`、`uvicorn[standard]`（仅此 2 个 pip 包）；其余 `sqlite3` / `asyncio` / `subprocess` 都是标准库 | `pip install -r backend/requirements.txt` |
+| 系统工具链 | `libimobiledevice`（`idevice_id` / `ideviceinfo` / `idevicepair` / `idevicebackup2`）+ `usbmuxd` | **从上游源码编译**，见下 |
+
+**iOS 备份协议不是本项目实现的**：整机备份能力来自 `libimobiledevice` 命令行工具链，
+后端只用 `subprocess` 调用它们并解析输出。本项目自研的是 Web 管理层、任务调度与 UI。
+所以「零依赖」只适用于前端，整个项目的地基恰恰是第三方开源组件。
+
+### 为什么从源码编译
+
+Ubuntu 24.04 / Debian 发行版源里的 `libimobiledevice-utils` 是上游 **2020-06-15**
+发布的 **1.3.0**，缺少 iOS 17+ 支持与 `idevicebackup2` 的后续修复。因此 `Dockerfile`
+按固定依赖顺序从上游构建：
+
+```
+libplist → libimobiledevice-glue → libtatsu → libusbmuxd → libimobiledevice
+```
+
+并单独编译 `usbmuxd`（固定到已验证 commit，为使用 `--config-dir` 指定证书目录）。
+首次构建约 **10–20 分钟**；国内网络慢可设 `APT_MIRROR=mirrors.ustc.edu.cn`。
+
+### 本地开发
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
+# 需要真连 iPhone 时（macOS）：brew install libimobiledevice usbmuxd
+```
+
+只做 Web / API 调试不需要系统工具链；`idevice_*` 不存在时设备相关接口会明确报错。
+
+### 部署后体检
+
+```bash
+docker exec ivault cat /usr/local/share/build-revisions.txt  # 各组件编译时的 commit
+docker exec ivault idevice_id -l                            # 插线后应列出 UDID
+docker compose logs -f ivault | grep usbmuxd                # 看守护进程是否正常
+```
+
+---
+
 ## 快速开始（绿联 NAS）
 
 **前提**：UGOS 已安装并运行 Docker 套件；有一个空闲 USB-A 口；备份卷有足够空间
 （首次全量备份通常是几十到上百 GB，建议放在 SSD 卷上，机械盘会明显慢）。
 
 ```bash
-git clone <本仓库> iVault && cd iVault
+git clone https://github.com/nanshanyi/iVault.git && cd iVault
 chmod +x install.sh
 ./install.sh
 ```
 
 脚本会检查 Docker、询问备份目录（如 `/volume1/ivault/backups`）、生成 `.env`，
-然后 `docker compose up -d --build`。首次构建需要下载 Ubuntu 基础镜像与工具链，
-约 2–5 分钟。
+然后 `docker compose up -d --build`。首次构建需从源码编译工具链，约 **10–20 分钟**。
 
 也可以手动部署：
 
 ```bash
 cp .env.example .env      # 编辑 BACKUP_LOCATION / META_LOCATION / IVAULT_PORT
-mkdir -p /volume1/ivault/backups /volume1/ivault/data
+mkdir -p /volume1/ivault/backups /volume1/ivault/data/lockdown
 docker compose up -d --build
 ```
 
@@ -46,8 +89,9 @@ docker compose up -d --build
 3. **立即备份**：进度、实时日志由 SSE 推送；**进度到 100% 后仍需等待后端写快照完成**
    （以页面提示/任务状态为准），再拔线
 
-> ⚠️ 配对证书保存在 `META_LOCATION/lockdown`，务必持久化该目录。
-> 容器删除后只要该目录还在，就不需要重新插线配对。
+> ⚠️ 配对证书由 `usbmuxd --config-dir /var/lib/lockdown` 写入，compose 已把宿主机
+> `META_LOCATION/lockdown` 挂到该路径。务必持久化此目录：容器删除重建后只要它还在，
+> 就不需要重新插线配对。
 
 ---
 
@@ -92,7 +136,7 @@ frontend/
   index.html  单页界面（内联 CSS，零依赖）
   app.js      渲染、REST、SSE、配对向导、主题切换
 scripts/
-  entrypoint.sh  启动 usbmuxd + uvicorn
+  entrypoint.sh  启动 usbmuxd（--config-dir 持久证书）+ uvicorn
 ```
 
 ### 主要 API
@@ -126,17 +170,21 @@ GET    /api/docs                   Swagger 文档
    释放空间；若要真正保留多个独立版本，需要每次备份后对目录做硬链接快照（v0.3）。
 3. **未加密备份**不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录等。
    如果需要这些，请在 iPhone 侧开启加密备份并牢记密码（密码不落 NAS）。
-4. **iOS 大版本升级**可能要求更新 `libimobiledevice`；镜像基于 Ubuntu 24.04 的
-   发行版包，若遇新 iOS 不支持，可改为从上游源码构建（参考项目里有完整 Dockerfile）。
+4. **工具链为上游源码构建**：已避开发行版 1.3.0 的老问题，但上游 master 会变动；
+   若某次重建镜像后新 iOS 不兼容，可把 `Dockerfile` 里各仓库固定到某个 release tag，
+   或调整 `USBMUXD_STOCK_REV` 后重建。
 5. UGOS 的 Docker 需允许 `privileged` 容器与 `/dev/bus/usb` 映射；
    若你的系统策略禁止，可改装宿主 `usbmuxd` 并把 socket 挂进容器。
+6. **尚未在真机 / UGOS 上验证**：镜像构建、容器 USB 透传、配对与备份链路均未实测，
+   首次部署属于 M0 验证，需把 iPhone 用数据线插到 NAS 上配合测试。
 
 ---
 
 ## 参考与致谢
 
-设计阶段参考了以下开源实现（仅参考思路，未复制代码）：
+设计与构建参考了以下开源实现（借鉴思路与构建顺序，未复制其应用代码）：
 
 - [razeencheng/iosbackup](https://github.com/razeencheng/iosbackup) — Go 实现，官方镜像，定时/Wi-Fi/通知
-- [JerryGHT04/ios-backup-station](https://github.com/JerryGHT04/ios-backup-station) — Python 实现，飞牛 fnOS 社区
-- [libimobiledevice](https://libimobiledevice.org/) — iOS 协议开源实现
+- [JerryGHT04/ios-backup-station](https://github.com/JerryGHT04/ios-backup-station) — Python 实现，飞牛 fnOS 社区；本项目 `Dockerfile` 的源码编译顺序与 `usbmuxd --config-dir` 用法参考其 Stage 1
+- [libimobiledevice](https://libimobiledevice.org/) — iOS 协议开源实现，本项目备份能力的来源
+

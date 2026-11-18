@@ -1,11 +1,10 @@
 """libimobiledevice 工具链封装：设备发现 / 信息 / 配对。
 
 所有 iOS 通信通过 idevice_* 命令行完成（Apple MobileSync 私有协议的开源实现）。
-容器内由 usbmuxd（USB）与 netmuxd（Wi-Fi）提供设备 mux 通道。
+容器内由 usbmuxd 提供 USB 设备 mux 通道；Wi-Fi 通道（netmuxd/usbmuxd2）属于 v0.2。
 """
 import asyncio
 import logging
-import os
 import re
 
 from . import config
@@ -20,7 +19,8 @@ async def _run(args: list[str], timeout=30) -> tuple[int, str]:
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ, "IDEVICEPAIR_LOCKDOWN_DIR": config.LOCKDOWN_DIR},
+            # 配对记录由 usbmuxd 的 --config-dir 决定（见 scripts/entrypoint.sh），
+            # 不通过环境变量覆盖——libimobiledevice 工具链不识别这类变量。
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return proc.returncode, out.decode(errors="replace")
