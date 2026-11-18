@@ -17,17 +17,20 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - IVAULT_LOG=INFO
+      # 可选：想让界面左下角显示系统版本时填（例如 "DSM 7.2"、"UGOS 1.21"、
+      # "QTS 5.1"）。不填则尝试读取下面的 /host-os-release，都取不到就隐藏这段。
+      - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
     volumes:
       # 备份库：Apple MobileSync 格式，含每台 UDID 的完整数据目录
-      - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（NAS 上的备份目录绝对路径）}:/data/backups
+      - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（宿主机上的备份目录绝对路径）}:/data/backups
       # 元数据：SQLite 数据库
-      - ${META_LOCATION:-/volume1/ivault/data}:/data/meta
+      - ${META_LOCATION:-./data}:/data/meta
       # 配对证书：libimobiledevice 由 usbmuxd 把记录固定写到 /var/lib/lockdown，
       # 必须挂到持久卷，否则容器重建后需要重新插线配对
-      - ${META_LOCATION:-/volume1/ivault/data}/lockdown:/var/lib/lockdown
-      # 只读挂入宿主机的系统标识，用于在界面上显示真实的 NAS 系统版本（UGOS x.y）。
-      # 容器内的 /etc/os-release 是 Debian 的，不能用；读不到时界面会自动隐藏这段。
-      - /etc/os-release:/host-os-release:ro
+      - ${META_LOCATION:-./data}/lockdown:/var/lib/lockdown
+      # 可选：显示宿主机系统版本。各发行版都有 /etc/os-release，取消注释即可。
+      # 若你的系统没有该文件，Docker 会在宿主机上创建一个同名空目录，所以默认不挂。
+      # - /etc/os-release:/host-os-release:ro
     restart: unless-stopped
     logging:
       options:

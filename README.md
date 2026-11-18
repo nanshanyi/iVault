@@ -1,13 +1,19 @@
-# iVault · iPhone 备份中心 for UGOS
+# iVault · iPhone / iPad 整机备份中心（Docker）
 
-在绿联 NAS（DXP4800 / UGOS Pro）上运行的 iPhone / iPad **整机备份**应用：
 把手机用数据线插到 NAS 的 USB 口完成一次配对，之后由 NAS 自己执行与
 Finder / iTunes 同格式的 **Apple MobileSync 全量与增量备份**，通过网页管理。
+
+**跑在任何能运行 Docker 的 NAS 上**——群晖、威联通、绿联、飞牛、TrueNAS、Unraid、
+树莓派或普通 Linux 主机都行，不绑定某一家系统。前提只有两条：容器能拿到
+USB 总线（`privileged` + `/dev/bus/usb` 映射），以及有一个空闲 USB-A 口。
+
+> 当前真机验证环境是绿联 DXP4800（UGOS 1.21）。其他平台的差异主要在 Docker 界面
+> 的叫法与卷路径写法，`docker-compose.yml` 不需要改结构。
 
 - 前端：深浅色双主题、总览 / 设备管理 / 备份任务 / 备份库 / 设置
 - 后端：FastAPI + SSE 实时推送，调用 `libimobiledevice` 官方工具链
 - 部署：单个 Docker 容器（`privileged` + USB 总线映射）；CI 提供 amd64 / arm64 预构建镜像，
-  NAS 上 `docker compose pull` 即用，无需自己编译工具链
+  目标机器上 `docker compose pull` 即用，无需自己编译工具链
 
 > 本项目与 Apple Inc. 无任何关联。备份格式为 Apple MobileSync，
 > 目录下的 `<UDID>/` 可拷贝到 Mac/PC 用 Finder、iTunes 或 iMazing 直接恢复。
@@ -64,9 +70,10 @@ docker compose logs -f ivault | grep usbmuxd                # 看守护进程是
 
 ---
 
-## 快速开始（绿联 NAS）
+## 快速开始（任意 Docker NAS / Linux 主机）
 
-**前提**：UGOS 已安装并运行 Docker 套件；有一个空闲 USB-A 口；备份卷有足够空间
+**前提**：已装 Docker（群晖 Container Manager、威联通 Container Station、
+绿联/飞牛的 Docker 应用、或 docker-ce 都行）；有一个空闲 USB-A 口；备份卷有足够空间
 （首次全量备份通常是几十到上百 GB，建议放在 SSD 卷上，机械盘会明显慢）。
 
 ```bash
@@ -75,7 +82,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-脚本会检查 Docker、询问备份目录（如 `/volume1/ivault/backups`）、生成 `.env`，
+脚本会检查 Docker、按你的实际卷路径询问备份目录、生成 `.env`，
 然后**拉取预构建镜像并启动**（`docker compose pull` + `up -d --no-build`），通常几十秒完成。
 只有拉取失败时才回落到本地编译。
 
@@ -83,9 +90,16 @@ chmod +x install.sh
 
 ```bash
 cp .env.example .env      # 编辑 BACKUP_LOCATION / META_LOCATION / IVAULT_PORT
-mkdir -p /volume1/ivault/backups /volume1/ivault/data/lockdown
+mkdir -p /your/volume/ivault/backups /your/volume/ivault/data/lockdown
 docker compose pull && docker compose up -d --no-build
 ```
+
+> 路径写法各平台不同：群晖/绿联常是 `/volume1/...`，威联通是 `/share/CACHEDEV1_DATA/...`，
+> 飞牛与普通 Linux 常见 `/vol1/...`、`/mnt/disk1/...`。填宿主机上的绝对路径即可。
+
+> **USB 透传**：容器需要 `privileged: true` 与 `/dev/bus/usb` 映射（compose 已配好）。
+> 部分 NAS 的 Docker 界面另有「USB 设备直通 / 设备访问」开关，也要一并打开。
+> 若系统策略不允许 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
 
 > **镜像从哪来**：推 tag 时 CI 自动构建 `linux/amd64` + `linux/arm64` 双架构镜像，
 > 推送到 `ghcr.io/nanshanyi/ivault`。
@@ -97,6 +111,22 @@ docker compose pull && docker compose up -d --no-build
 >   `docker compose up -d --build`
 
 浏览器打开 `http://<NAS-IP>:8666`。
+
+### 可选：让界面显示你的系统版本
+
+左下角那行「服务运行中 · 系统名」是可选的：识别不到就只显示服务状态与版本号，不会瞎猜。
+
+```bash
+# 方式一（最稳）：直接指定，install.sh 会问，也可以写进 .env
+IVAULT_OS_NAME="DSM 7.2"        # 或 "UGOS 1.21"、'QTS 5.1'、'TrueNAS SCALE 24.04'
+
+# 方式二：取消 docker-compose.yml 里这行的注释，让容器读宿主机 os-release
+#   - /etc/os-release:/host-os-release:ro
+```
+
+> 容器内的 `/etc/os-release` 是镜像自带的 Debian 信息，后端刻意不读它，避免界面上
+> 写着「Debian 13」而你的设备其实是群晖。默认不挂载也是这个原因：少数系统没有这个
+> 文件时，Docker 会在宿主机上建一个同名空目录。
 
 ### 首次备份三步
 
@@ -132,7 +162,7 @@ docker compose pull && docker compose up -d --no-build
 | Wi-Fi 无线备份（netmuxd） | ⏳ v0.2，见「已知限制」 |
 | 备份内容浏览（相册/信息/联系人统计） | ⏳ v0.3 |
 | 备份加密（密码在 iPhone 侧设置） | ⏳ 后续 |
-| 多用户权限（对接 UGOS 账户） | ⏳ 后续 |
+| 多用户权限（对接 NAS 账户体系） | ⏳ 后续 |
 
 ---
 
@@ -201,12 +231,14 @@ GET    /api/docs                   Swagger 文档
 4. **工具链为上游源码构建，已钉 commit SHA**：各库固定在 `Dockerfile` 顶部的
    `ARG *_REF`（40 位 SHA），上游 `master` 变动不会影响构建结果，也不会突然构建失败。
    若遇到新 iOS 不兼容，把这些 SHA 换成更新的版本后重新构建、真机验证一次即可。
-5. UGOS 的 Docker 需允许 `privileged` 容器与 `/dev/bus/usb` 映射；
-   若你的系统策略禁止，可改装宿主 `usbmuxd` 并把 socket 挂进容器。
+5. **平台差异只在 Docker 外壳**：需要 `privileged` 容器与 `/dev/bus/usb` 映射。
+   群晖/威联通/绿联/飞牛的图形界面里开关位置不同，个别系统还要额外打开「USB 直通」；
+   若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
 6. **验证状态**：
-   - ✅ **配对链路已在真机验证**（iPhone Xs / iOS 18.7.12）：设备发现 → 信任授权 →
-     证书落地 → 入库，含「未弹窗需拔插线」的排障路径
-   - ⬜ 镜像构建、UGOS 容器内的 USB 透传、`idevicebackup2` 备份落盘仍未实测
+   - ✅ **配对链路已在真机验证**（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21）：
+     设备发现 → 信任授权 → 证书落地 → 入库，含「未弹窗需拔插线」的排障路径
+   - ⬜ 镜像构建、容器内 USB 透传、`idevicebackup2` 备份落盘仍未实测
+   - ⬜ 其他 NAS 平台（群晖 / 威联通 / 飞牛 / TrueNAS）未实机测试，理论上只需 Docker 侧配置
    - 首次部署仍属 M0 验证，需把 iPhone 用数据线插到 NAS 上配合测试
 
 ---

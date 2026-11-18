@@ -31,16 +31,40 @@ app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
 _pair_sessions: dict[str, device.PairSession] = {}
 _state = {"online_devices": [], "boot_at": time.time()}
 
-# 宿主机系统标识的候选来源（compose 会把宿主机 /etc/os-release 只读挂到第一个）
-_OS_FILES = ("/host-os-release", "/etc/ugos-release", "/etc/ugos_version", "/etc/os-release")
+# 宿主机系统标识的候选来源（厂商无关）：
+#   /host-os-release      compose 可选挂载的宿主机 /etc/os-release
+#   /host/etc/os-release  直接挂宿主 /etc 时的位置
+#   /etc/ugos-release、/etc/ugos_version  绿联 UGOS 的版本文件
+# 刻意不读容器自己的 /etc/os-release：那是镜像发行版（Debian），显示出来是误导。
+_OS_FILES = ("/host-os-release", "/host/etc/os-release", "/etc/ugos-release", "/etc/ugos_version")
+
+
+def _parse_os_release(text: str) -> str | None:
+    """从 os-release 风格或纯版本号文件里取一个人类可读的系统名。"""
+    fields = dict(re.findall(r"^\s*([A-Z_]+)\s*=\s*(.+?)\s*$", text, re.M))
+    pretty = (fields.get("PRETTY_NAME") or "").strip().strip('"')
+    name = (fields.get("NAME") or "").strip().strip('"')
+    ver = (fields.get("VERSION_ID") or "").strip().strip('"')
+    if pretty:
+        return pretty
+    if name and ver:
+        return f"{name} {ver}"
+    if name:
+        return name
+    # 纯文本版本文件（例如某些系统的 /etc/xxx_version）：取第一行有效内容
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" not in line:
+            return line
+    return None
 
 
 def detect_os_name() -> str | None:
-    """识别 NAS 的系统名与版本，识别不出返回 None。
+    """识别运行主机的系统名与版本，识别不出返回 None（界面自动隐藏这段）。
 
-    容器内的 /etc/os-release 是 Debian 的镜像信息，直接显示会误导用户
-    （界面上写着「Debian 13」而设备其实是绿联 UGOS），所以只有内容确实提到
-    UGOS/绿联时才采用，否则前端隐藏这段，只显示服务状态与版本号。
+    本项目不绑定任何一家 NAS：群晖、威联通、绿联、飞牛、TrueNAS、Unraid、
+    普通 Linux 主机只要 Docker 能跑 `privileged` + USB 映射即可。系统名不是必需信息，
+    所以取不到就不显示，而不是猜一个或写死一个。
     """
     env = os.environ.get("IVAULT_OS_NAME", "").strip()
     if env:
@@ -50,20 +74,12 @@ def detect_os_name() -> str | None:
             text = open(path, encoding="utf-8", errors="replace").read()
         except OSError:
             continue
-        if not re.search(r"ugos|绿联|ugreen", text, re.I) and "ugos" not in os.path.basename(path).lower():
-            continue
-        fields = dict(re.findall(r"^\s*([A-Z_]+)\s*=\s*(.+?)\s*$", text, re.M))
-        pretty = (fields.get("PRETTY_NAME") or "").strip().strip('"')
-        ver = (fields.get("VERSION_ID") or "").strip().strip('"')
-        if pretty.upper().startswith("UGOS"):
-            return pretty
-        if ver:
-            return "UGOS " + ver
-        # /etc/ugos_version 之类的纯文本文件：取第一行有效内容
-        for line in text.splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" not in line:
-                return ("UGOS " + line) if re.match(r"^[\d.]+$", line) else line
+        got = _parse_os_release(text)
+        if got:
+            # 纯版本号文件（如 /etc/ugos_version 只有 "1.21.1.0016"）补上厂商名，避免界面显示一串裸数字
+            if re.fullmatch(r"[\d.]+", got) and "ugos" in os.path.basename(path).lower():
+                return "UGOS " + got
+            return got
     return None
 
 

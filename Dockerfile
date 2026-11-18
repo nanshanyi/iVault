@@ -82,7 +82,7 @@ LABEL org.opencontainers.image.title="iVault" \
       org.opencontainers.image.version="${IVAULT_VERSION}" \
       org.opencontainers.image.revision="${IVAULT_COMMIT}" \
       org.opencontainers.image.source="https://github.com/nanshanyi/iVault" \
-      org.opencontainers.image.description="iPhone 整机备份中心 for 绿联 NAS (UGOS)"
+      org.opencontainers.image.description="iPhone / iPad 整机备份中心，任何可运行 Docker 的 NAS 均可部署"
 
 RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; fi
 RUN apt-get update && apt-get install -y --no-install-recommends \
