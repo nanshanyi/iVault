@@ -7,6 +7,7 @@
 import asyncio
 import datetime
 import logging
+import os
 import re
 import secrets
 import time
@@ -22,7 +23,10 @@ logging.basicConfig(level=config.LOG_LEVEL,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("ivault.main")
 
-app = FastAPI(title="iVault", version="0.1.0", docs_url="/api/docs")
+# 版本号由镜像构建参数注入（CI 传 tag 名），本地开发回落到默认值
+VERSION = os.environ.get("IVAULT_VERSION", "0.1.0")
+
+app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
 
 _pair_sessions: dict[str, device.PairSession] = {}
 _state = {"online_devices": [], "boot_at": time.time()}
@@ -83,7 +87,7 @@ async def _device_poller():
 async def status():
     disk_free = shutil_disk_free(config.BACKUP_DIR)
     return {
-        "version": "0.1.0",
+        "version": VERSION,
         "uptime_s": int(time.time() - _state["boot_at"]),
         "online_devices": _state["online_devices"],
         "active_jobs": jobs.active_jobs(),

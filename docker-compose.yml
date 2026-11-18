@@ -1,10 +1,12 @@
 services:
   ivault:
+    # 默认使用 CI 预构建镜像：NAS 只需 pull，几十秒完成，不依赖 GitHub 源码可达。
+    # 想本地编译（改代码 / 完全离线）：IVAULT_BUILD=1 docker compose up -d --build
+    image: ghcr.io/nanshanyi/ivault:${IVAULT_TAG:-latest}
     build:
       context: .
       args:
         APT_MIRROR: ${APT_MIRROR:-}
-    image: ivault:local
     container_name: ivault
     # 访问 USB 总线是 iPhone 配对与整机备份的硬性前提
     privileged: true

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # iVault 部署助手：在 NAS / Linux 主机上检查环境、生成 .env 并启动容器。
+#
+# 默认使用 CI 预构建镜像（docker compose pull），通常几十秒完成，NAS 不需要访问 GitHub 源码。
+# 需要本地编译（改过代码 / 完全离线）时：IVAULT_BUILD=1 ./install.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -29,12 +32,30 @@ cat > .env <<EOF
 BACKUP_LOCATION=${BACKUP_LOCATION}
 META_LOCATION=${META_LOCATION}
 IVAULT_PORT=${IVAULT_PORT}
+# latest = 跟随最新发布；也可固定成某个版本，例如 v0.2.0
+IVAULT_TAG=latest
 EOF
 echo "✓ 已写入 .env"
 
-echo "==> 构建并启动（首次约 10–20 分钟，需从上游源码编译 libimobiledevice 全栈）"
-echo "    国内网络慢可加：APT_MIRROR=mirrors.ustc.edu.cn ./install.sh"
-docker compose up -d --build
+echo ""
+if [ "${IVAULT_BUILD:-0}" = "1" ]; then
+    echo "==> 本地构建镜像（IVAULT_BUILD=1）"
+    echo "    首次约 10–20 分钟，需能从 GitHub 拉取上游源码"
+    echo "    国内网络慢可加：APT_MIRROR=mirrors.ustc.edu.cn ./install.sh"
+    docker compose up -d --build
+else
+    echo "==> 拉取预构建镜像（通常几十秒）"
+    if docker compose pull ivault; then
+        docker compose up -d --no-build
+    else
+        echo ""
+        echo "⚠ 拉取失败：镜像可能尚未发布，或当前网络无法访问 ghcr.io"
+        echo "  回落到本地构建，首次约 10–20 分钟，需能从 GitHub 拉取上游源码"
+        echo "  国内网络慢可加：APT_MIRROR=mirrors.ustc.edu.cn ./install.sh"
+        echo "  若镜像是私有的，先执行：docker login ghcr.io"
+        docker compose up -d --build
+    fi
+fi
 
 IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<NAS-IP>")
 echo ""

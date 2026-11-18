@@ -6,7 +6,8 @@ Finder / iTunes 同格式的 **Apple MobileSync 全量与增量备份**，通过
 
 - 前端：深浅色双主题、总览 / 设备管理 / 备份任务 / 备份库 / 设置
 - 后端：FastAPI + SSE 实时推送，调用 `libimobiledevice` 官方工具链
-- 部署：单个 Docker 容器（`privileged` + USB 总线映射）
+- 部署：单个 Docker 容器（`privileged` + USB 总线映射）；CI 提供 amd64 / arm64 预构建镜像，
+  NAS 上 `docker compose pull` 即用，无需自己编译工具链
 
 > 本项目与 Apple Inc. 无任何关联。备份格式为 Apple MobileSync，
 > 目录下的 `<UDID>/` 可拷贝到 Mac/PC 用 Finder、iTunes 或 iMazing 直接恢复。
@@ -35,8 +36,14 @@ Ubuntu 24.04 / Debian 发行版源里的 `libimobiledevice-utils` 是上游 **20
 libplist → libimobiledevice-glue → libtatsu → libusbmuxd → libimobiledevice
 ```
 
-并单独编译 `usbmuxd`（固定到已验证 commit，为使用 `--config-dir` 指定证书目录）。
-首次构建约 **10–20 分钟**；国内网络慢可设 `APT_MIRROR=mirrors.ustc.edu.cn`。
+并单独编译 `usbmuxd`（为使用 `--config-dir` 指定证书目录）。
+
+**所有组件都钉到 40 位 commit SHA**，构建结果可复现：上游 `master` 怎么变都不会影响
+已有的镜像。升级组件只需改 `Dockerfile` 顶部的 `ARG *_REF`，重新构建并真机验证一次。
+
+编译只发生在 `docker build` 阶段，**产物固化进镜像层**，容器运行时零安装、零联网。
+本地首次构建约 **10–20 分钟**；国内网络慢可设 `APT_MIRROR=mirrors.ustc.edu.cn`。
+但正常部署**不需要你编译**——CI 已经构建好镜像，直接 pull 即可（见下）。
 
 ### 本地开发
 
@@ -69,15 +76,25 @@ chmod +x install.sh
 ```
 
 脚本会检查 Docker、询问备份目录（如 `/volume1/ivault/backups`）、生成 `.env`，
-然后 `docker compose up -d --build`。首次构建需从源码编译工具链，约 **10–20 分钟**。
+然后**拉取预构建镜像并启动**（`docker compose pull` + `up -d --no-build`），通常几十秒完成。
+只有拉取失败时才回落到本地编译。
 
 也可以手动部署：
 
 ```bash
 cp .env.example .env      # 编辑 BACKUP_LOCATION / META_LOCATION / IVAULT_PORT
 mkdir -p /volume1/ivault/backups /volume1/ivault/data/lockdown
-docker compose up -d --build
+docker compose pull && docker compose up -d --no-build
 ```
+
+> **镜像从哪来**：推 tag 时 CI 自动构建 `linux/amd64` + `linux/arm64` 双架构镜像，
+> 推送到 `ghcr.io/nanshanyi/ivault`。
+>
+> - 首次发布后请到 GitHub 仓库 **Settings → Packages** 把该包可见性改为 **Public**，
+>   否则 NAS 上 pull 之前要先 `docker login ghcr.io`
+> - 固定版本：`.env` 里设 `IVAULT_TAG=v0.2.0`（默认 `latest`）
+> - 本地编译（改过代码 / 完全离线）：`IVAULT_BUILD=1 ./install.sh`，或
+>   `docker compose up -d --build`
 
 浏览器打开 `http://<NAS-IP>:8666`。
 
@@ -170,9 +187,9 @@ GET    /api/docs                   Swagger 文档
    释放空间；若要真正保留多个独立版本，需要每次备份后对目录做硬链接快照（v0.3）。
 3. **未加密备份**不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录等。
    如果需要这些，请在 iPhone 侧开启加密备份并牢记密码（密码不落 NAS）。
-4. **工具链为上游源码构建**：已避开发行版 1.3.0 的老问题，但上游 master 会变动；
-   若某次重建镜像后新 iOS 不兼容，可把 `Dockerfile` 里各仓库固定到某个 release tag，
-   或调整 `USBMUXD_STOCK_REV` 后重建。
+4. **工具链为上游源码构建，已钉 commit SHA**：各库固定在 `Dockerfile` 顶部的
+   `ARG *_REF`（40 位 SHA），上游 `master` 变动不会影响构建结果，也不会突然构建失败。
+   若遇到新 iOS 不兼容，把这些 SHA 换成更新的版本后重新构建、真机验证一次即可。
 5. UGOS 的 Docker 需允许 `privileged` 容器与 `/dev/bus/usb` 映射；
    若你的系统策略禁止，可改装宿主 `usbmuxd` 并把 socket 挂进容器。
 6. **尚未在真机 / UGOS 上验证**：镜像构建、容器 USB 透传、配对与备份链路均未实测，

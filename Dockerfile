@@ -21,32 +21,51 @@ ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
     LDFLAGS=-L/usr/local/lib
 WORKDIR /src
 
-# 依赖顺序固定，不可调换；--depth 1 足够（无需 libgeneral / usbmuxd2 的 commit 计数）
+# 各组件钉死到 40 位 commit SHA，保证任何机器、任何时间构建出的镜像完全一致。
+# 取值 = iosbackup 项目 2026-06-19 在 NAS 真机构建通过的 master HEAD（明确支持 iPadOS/iOS 26）。
+# 升级组件：改这里的 SHA，重新构建并真机验证一次即可。
+ARG LIBPLIST_REF=32428abacb909988e8e960a8845a6430b17b6a60
+ARG LIBGLUE_REF=da770a7687f35fbb981db4d7b47b1b032cd5c2c7
+ARG LIBTATSU_REF=60a39f36d719344360ec2e87563ed43f61f0530f
+ARG LIBUSBMUXD_REF=93eb168bf6b07472d17781328c21df0c60300524
+ARG LIBIMD_REF=fa0f79190142bc309307967c058f89c1b36eb6b8
+
+# 依赖顺序固定，不可调换。
+# 用 init + fetch --depth 1 <SHA> 而非 clone + checkout：浅克隆只有 HEAD 一个 commit，
+# 直接 checkout 其他 SHA 会报 "reference is not a tree"。
 RUN set -eux; \
     build() { \
-      name="$1"; url="$2"; shift 2; \
-      git clone --depth 1 --recursive "$url" "$name"; \
+      name="$1"; url="$2"; ref="$3"; shift 3; \
+      git init -q "$name"; \
       cd "$name"; \
+      git remote add origin "$url"; \
+      git fetch -q --depth 1 origin "$ref"; \
+      git checkout -q FETCH_HEAD; \
+      git submodule update -q --init --recursive >/dev/null 2>&1 || true; \
       ./autogen.sh --prefix=/usr/local "$@"; \
       make -j"$(nproc)"; make install; ldconfig; \
-      echo "$name $(git rev-parse --short HEAD)" >> /usr/local/share/build-revisions.txt; \
+      echo "$name $ref" >> /usr/local/share/build-revisions.txt; \
       cd ..; \
     }; \
     mkdir -p /usr/local/share; \
-    build libplist              https://github.com/libimobiledevice/libplist.git --without-cython; \
-    build libimobiledevice-glue https://github.com/libimobiledevice/libimobiledevice-glue.git; \
-    build libtatsu              https://github.com/libimobiledevice/libtatsu.git; \
-    build libusbmuxd            https://github.com/libimobiledevice/libusbmuxd.git; \
-    build libimobiledevice      https://github.com/libimobiledevice/libimobiledevice.git --without-cython
+    build libplist              https://github.com/libimobiledevice/libplist.git "$LIBPLIST_REF" --without-cython; \
+    build libimobiledevice-glue https://github.com/libimobiledevice/libimobiledevice-glue.git "$LIBGLUE_REF"; \
+    build libtatsu              https://github.com/libimobiledevice/libtatsu.git "$LIBTATSU_REF"; \
+    build libusbmuxd            https://github.com/libimobiledevice/libusbmuxd.git "$LIBUSBMUXD_REF"; \
+    build libimobiledevice      https://github.com/libimobiledevice/libimobiledevice.git "$LIBIMD_REF" --without-cython
 
 # USB 守护进程单独编译：stock usbmuxd 支持 --config-dir，可把配对证书写进持久卷。
-# 固定到已验证的 commit，避免上游 master 变动导致构建失败。
+# 同样钉 commit + fetch，避免上游 master 变动导致构建失败。
 ARG USBMUXD_STOCK_REV=3ded00c9985a5108cfc7591a309f9a23d57a8cba
-RUN git clone --depth 1 https://github.com/libimobiledevice/usbmuxd.git usbmuxd-stock \
- && cd usbmuxd-stock && git checkout "$USBMUXD_STOCK_REV" \
- && ./autogen.sh --prefix=/opt/usbmuxd-stock --without-systemd \
- && make -j"$(nproc)" && make install \
- && echo "usbmuxd-stock $(git rev-parse --short HEAD)" >> /usr/local/share/build-revisions.txt
+RUN set -eux; \
+    git init -q usbmuxd-stock; \
+    cd usbmuxd-stock; \
+    git remote add origin https://github.com/libimobiledevice/usbmuxd.git; \
+    git fetch -q --depth 1 origin "$USBMUXD_STOCK_REV"; \
+    git checkout -q FETCH_HEAD; \
+    ./autogen.sh --prefix=/opt/usbmuxd-stock --without-systemd; \
+    make -j"$(nproc)"; make install; \
+    echo "usbmuxd-stock $USBMUXD_STOCK_REV" >> /usr/local/share/build-revisions.txt
 
 # ---------- Stage 2: 精简运行镜像 ----------
 FROM debian:trixie-slim
@@ -54,6 +73,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 ARG APT_MIRROR=
+
+# 版本元数据：CI 构建时传入 tag 名与 commit，本地构建回落到默认值
+ARG IVAULT_VERSION=0.1.0
+ARG IVAULT_COMMIT=unknown
+ENV IVAULT_VERSION=${IVAULT_VERSION}
+LABEL org.opencontainers.image.title="iVault" \
+      org.opencontainers.image.version="${IVAULT_VERSION}" \
+      org.opencontainers.image.revision="${IVAULT_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/nanshanyi/iVault" \
+      org.opencontainers.image.description="iPhone 整机备份中心 for 绿联 NAS (UGOS)"
+
 RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; fi
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libusb-1.0-0 libavahi-client3 libssl3t64 libreadline8t64 libcurl4t64 \
