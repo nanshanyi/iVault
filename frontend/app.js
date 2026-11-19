@@ -235,6 +235,10 @@ function updateDeviceProgress(udid, pct, phase, elapsed) {
 /* 当前跟踪的任务：取消按钮与断线重连都靠它，不能只依赖 EventSource.url ——
    连接一断 jobSource 就没了，那时候正是最需要「取消」的时候 */
 let currentJob = null;
+/* 任务卡的显示状态：idle / running / done / failed / canceled。
+   refresh() 每 6 秒跑一次，靠它判断「卡片还在显示进行中，但后端已经没有活跃任务」，
+   避免任务结束后卡片停在最后一个进度上。 */
+let liveJobState = 'idle';
 let lastUnpairUdid = null;
 
 /* ---------- 热力图（最近 105 天，按完成日聚合） ---------- */
@@ -735,7 +739,9 @@ async function startBackup(udid) {
 }
 function attachJob(jobId, udid, startedAt, kind) {
   if (jobSource) { jobSource.close(); jobSource = null; }
+  resetLiveJob();                      // 清掉上一轮留下的终态（失败原因等）
   currentJob = { id: jobId, udid: udid, kind: kind || 'BACKUP' };
+  liveJobState = 'running';
   $('liveJob').style.display = 'block';
   $('navJobBadge').textContent = '1';
   $('navJobBadge').style.display = 'block';
@@ -773,11 +779,13 @@ function attachJob(jobId, udid, startedAt, kind) {
       }
       if (currentJob) updateDeviceProgress(currentJob.udid, p, phase);
     } else if (d.type === 'done') {
-      finishJob('✓ 备份完成 · 记录 #' + (d.backup_id || '?') + ' 已保存到 NAS');
+      const isR = currentJob && currentJob.kind === 'RESTORE';
+      finishJob('done', isR ? '✓ 恢复完成'
+        : '✓ 备份完成 · 记录 #' + (d.backup_id || '?') + ' 已保存到 NAS');
     } else if (d.type === 'failed') {
-      finishJob('备份失败：' + (d.error || '未知错误'));
+      finishJob('failed', (currentJob && currentJob.kind === 'RESTORE' ? '恢复失败' : '备份失败'), d.error);
     } else if (d.type === 'canceled') {
-      finishJob('任务已取消');
+      finishJob('canceled', '任务已取消');
     }
   };
   jobSource.onerror = () => {
@@ -810,9 +818,11 @@ async function resyncJob(jobId, udid, attempt) {
   }
   const j = (list || []).find(x => x.id === jobId);
   if (j) { attachJob(jobId, udid, j.started_at, j.kind); return; }
+  /* 任务已经不在活跃表里：说明结束事件丢了（刷新页面/断网）。结果去历史记录里看，
+     卡片直接收起，别让它停在最后一个进度上。 */
   detachJob();
-  $('prPhase').textContent = '已结束';
-  setTimeout(refresh, 600);
+  hideLiveJob();
+  setTimeout(refresh, 300);
 }
 function detachJob() {
   if (jobSource) { jobSource.close(); jobSource = null; }
@@ -820,11 +830,59 @@ function detachJob() {
   if (jobTick) { clearInterval(jobTick); jobTick = null; }
   $('navJobBadge').style.display = 'none';
 }
-function finishJob(msg) {
+/* 收尾三态：成功 → 展示 100% 两秒后收起；取消 → 立即收起；
+   失败 → 保留卡片把原因写清楚，按钮变「关闭」。 */
+function finishJob(kind, msg, error) {
+  const udid = currentJob && currentJob.udid;
   detachJob();
-  $('prPhase').textContent = '已结束';
-  toast(msg);
-  setTimeout(refresh, 1200);
+  liveJobState = kind;
+  const arc = $('prArc');
+  if (kind === 'done') {
+    $('prPct').textContent = '100%';
+    arc.style.strokeDashoffset = '0';
+    $('prPhase').textContent = '已完成';
+    $('jPhase').textContent = '已完成';
+    toast(msg);
+    refresh();                       // 立刻刷新：历史表格与卡片状态不能有时差
+    setTimeout(hideLiveJob, 2200);
+    return;
+  }
+  if (kind === 'canceled') {
+    toast(msg);
+    hideLiveJob();                   // 取消不该留下「99%」这种半成品画面
+    refresh();
+    return;
+  }
+  // failed
+  $('liveJob').classList.add('failed');
+  $('jobTitle').textContent = msg + ' · ' + devName(udid);
+  $('prPct').textContent = '✕';
+  $('prPhase').textContent = '已失败';
+  $('jPhase').textContent = '已失败';
+  arc.style.opacity = '.28';
+  const box = $('jobErr');
+  box.style.display = 'block';
+  box.textContent = error ? '失败原因：' + error : '任务失败，未返回具体原因';
+  const btn = $('jobActBtn');
+  btn.textContent = '关闭';
+  btn.className = 'btn';
+  btn.onclick = hideLiveJob;
+  refresh();
+}
+/* 收起任务卡并复位，下一轮任务会重新走 resetLiveJob() */
+function hideLiveJob() {
+  $('liveJob').style.display = 'none';
+  resetLiveJob();
+}
+function resetLiveJob() {
+  liveJobState = 'idle';
+  const box = $('jobErr');
+  if (box) { box.style.display = 'none'; box.textContent = ''; }
+  const btn = $('jobActBtn');
+  if (btn) { btn.textContent = '取消'; btn.className = 'btn danger'; btn.onclick = cancelJob; }
+  const arc = $('prArc');
+  if (arc) arc.style.opacity = '';
+  $('liveJob').classList.remove('failed');
 }
 async function cancelJob() {
   const id = currentJob && currentJob.id;
@@ -1002,7 +1060,13 @@ async function refresh() {
        否则任务在跑却看不到进度，也没有「取消」入口。 */
     const live = (st.active_jobs || [])[0];
     if (live && !jobSource) attachJob(live.id, live.udid, live.started_at, live.kind);
-    else if (!live && !jobSource) currentJob = null;
+    else if (!live && !jobSource) {
+      currentJob = null;
+      /* 后端已经没有任何活跃任务，但卡片还停在「进行中」：
+         这是结束事件丢失的兜底（刷新页面、断网、后端重启）。
+         直接收起——结果去历史记录里看，别留一个假的进度。 */
+      if (liveJobState === 'running') hideLiveJob();
+    }
     $('setPath').textContent = st.backup_dir || '—';
     $('aboutText').textContent = 'iVault v' + st.version + ' · 备份目录 ' + st.backup_dir;
     $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' +
