@@ -71,7 +71,7 @@ app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
 # 前端每 6 秒刷一轮状态，一次 4 个请求 —— 开着 uvicorn 的 access log 时，
 # 一天五万多条轮询记录会把真正的报错彻底淹掉。entrypoint 里已加 --no-access-log，
 # 改由这里只记「值得看」的请求：出错、写操作、异常慢的。
-_QUIET_GET = ("/api/status", "/api/devices", "/api/snapshots", "/api/settings", "/api/jobs/active")
+_QUIET_GET = ("/api/status", "/api/devices", "/api/backups", "/api/settings", "/api/jobs/active")
 
 
 @app.middleware("http")
@@ -275,13 +275,13 @@ def _json_dumps(obj) -> str:
 async def startup():
     store.init_db()
     # 上次退出时还在跑的任务不会自己收尾：内存里的 Job 已经没了，
-    # 数据库里的快照还停在 RUNNING。启动时统一对账，避免「永远进行中」。
+    # 数据库里的备份记录还停在 RUNNING。启动时统一对账，避免「永远进行中」。
     try:
-        stale = store.fail_interrupted_snapshots()
+        stale = store.fail_interrupted_backups()
         if stale:
-            log.warning("上次退出时有 %d 个未收尾的快照，已标记为失败", stale)
+            log.warning("上次退出时有 %d 个未收尾的备份记录，已标记为失败", stale)
     except Exception as e:  # noqa: BLE001
-        log.warning("对账历史快照失败：%s", e)
+        log.warning("对账历史备份记录失败：%s", e)
     asyncio.create_task(_device_poller())
     asyncio.create_task(_scheduler_loop())
     log.info("iVault 启动完成，备份目录=%s", config.BACKUP_DIR)
@@ -339,10 +339,13 @@ async def devices():
         conn = _state["transports"].get(d["udid"])
         d["online"] = conn is not None
         d["connection"] = conn or "offline"      # usb / network / offline
-        snaps = store.list_snapshots(d["udid"], limit=500)
+        snaps = store.list_backups(d["udid"], limit=500)
         completed = [s for s in snaps if s["status"] == "COMPLETE"]
-        d["snapshot_count"] = len(completed)
-        d["total_bytes"] = sum(s["size_bytes"] for s in completed)
+        d["backup_count"] = len(completed)
+        # 占用只能取最近一次成功备份的统计：单目录覆盖模式下每条记录的
+        # size_bytes 都是整个备份目录的大小（增量也写同一目录），
+        # 按条数求和会把同一份数据成倍虚高（60GB 手机备份 5 次显示 300GB）。
+        d["total_bytes"] = completed[0]["size_bytes"] if completed else 0
         out.append(d)
     return out
 
@@ -383,7 +386,7 @@ async def pair_events(sid: str):
     if not s:
         raise HTTPException(404, "session 不存在或已过期")
     q = s.subscribe()
-    # 补发当前阶段快照：必须是完整的 last_event（含 message/remaining 等字段），
+    # 补发当前阶段状态：必须是完整的 last_event（含 message/remaining 等字段），
     # 只推给新订阅者，避免给已有订阅者重复广播。
     snap = s.last_event or {"stage": s.stage, "udid": s.udid}
     try:
@@ -426,7 +429,7 @@ async def trigger_backup(body: dict):
         job = jobs.start_backup(udid, job_id=uuid.uuid4().hex)
     except jobs.DeviceBusy as e:
         raise HTTPException(409, str(e)) from e
-    return {"job_id": job.id, "snapshot_id": job.snap_id}
+    return {"job_id": job.id, "backup_id": job.backup_id}
 
 
 @app.post("/api/restore")
@@ -437,7 +440,7 @@ async def trigger_restore(body: dict):
     # 前置检查放在启动任务之前：恢复是少数会覆盖设备数据的操作，
     # 让失败发生在请求阶段、带着明确原因返回，而不是起一个注定失败的任务。
     if not any(s["status"] == "COMPLETE"
-               for s in store.list_snapshots(udid, limit=500)):
+               for s in store.list_backups(udid, limit=500)):
         raise HTTPException(409, "还没有可恢复的成功备份，请先完成一次备份")
     try:
         await _refresh_transports()
@@ -490,18 +493,18 @@ async def job_cancel(job_id: str):
     return {"ok": True}
 
 
-@app.get("/api/snapshots/{snap_id}/log")
-async def snapshot_log(snap_id: int):
+@app.get("/api/backups/{backup_id}/log")
+async def backup_log(backup_id: int):
     """回看某次备份的日志。
 
-    以前这些日志只活在 Job 对象里，任务一结束就没了；现在落进 snapshots.log，
+    以前这些日志只活在 Job 对象里，任务一结束就没了；现在落进 backups.log，
     可以事后回答「昨晚那次为什么失败」。
     """
-    s = store.get_snapshot(snap_id)
+    s = store.get_backup(backup_id)
     if not s:
         raise HTTPException(404, "记录不存在")
     return {
-        "id": snap_id,
+        "id": backup_id,
         "udid": s["udid"],
         "status": s["status"],
         "error": s.get("error") or "",
@@ -535,7 +538,7 @@ async def diagnostics():
         add("（无）")
     add("")
     add("--- 最近备份记录 ---")
-    for s in store.list_snapshots(limit=8):
+    for s in store.list_backups(limit=8):
         flag = ("  " + (s.get("error") or "")[:80]) if s.get("error") else ""
         add(f"#{s['id']} {s['status']} {datetime.datetime.fromtimestamp(s['started_at']).strftime('%m-%d %H:%M')}"
             f" {human_size(s['size_bytes'])}{flag}")
@@ -562,15 +565,15 @@ def fmt_uptime(sec: int) -> str:
     return (f"{dd}天" if dd else "") + (f"{hh}小时" if hh or dd else "") + f"{mm}分"
 
 
-@app.get("/api/snapshots")
-async def snapshots(udid: str | None = None):
-    return store.list_snapshots(udid)
+@app.get("/api/backups")
+async def backups(udid: str | None = None):
+    return store.list_backups(udid)
 
 
-@app.delete("/api/snapshots/{snap_id}")
-async def del_snapshot(snap_id: int):
-    snap = store.delete_snapshot(snap_id)
-    if not snap:
+@app.delete("/api/backups/{backup_id}")
+async def del_backup(backup_id: int):
+    rec = store.delete_backup(backup_id)
+    if not rec:
         raise HTTPException(404, "记录不存在")
     return {"ok": True,
             "note": "磁盘上只保留最新一次可恢复状态；删除记录仅移除展示条目，不回收磁盘空间"}
@@ -585,21 +588,15 @@ async def settings():
 
 @app.put("/api/settings")
 async def put_settings(body: dict):
-    allowed = {"schedule_enabled", "schedule_time", "retention", "notify_webhook"}
-    # 校验并规范化：时间统一成 HH:MM，保留数限定 1–10
+    allowed = {"schedule_enabled", "schedule_time", "notify_webhook"}
+    # 校验并规范化：时间统一成 HH:MM。
+    # 没有「保留份数」之类的设置：备份是单目录覆盖模式，磁盘上始终只有
+    # 最新一次可恢复状态，历史记录就是任务台账，不回收也不需要配置。
     if "schedule_time" in body:
         m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(body["schedule_time"]).strip())
         if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
             raise HTTPException(400, "备份时间格式应为 HH:MM（00:00–23:59）")
         body["schedule_time"] = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
-    if "retention" in body:
-        try:
-            n = int(body["retention"])
-        except (TypeError, ValueError):
-            raise HTTPException(400, "保留快照数需为 1–10 的整数")
-        if not 1 <= n <= 10:
-            raise HTTPException(400, "保留快照数需在 1–10 之间")
-        body["retention"] = str(n)
     for k, v in body.items():
         if k in allowed:
             store.set_setting(k, str(v))
@@ -627,7 +624,6 @@ async def _scheduler_loop():
                             log.info("定时备份已触发: %s", d["udid"])
                         except jobs.DeviceBusy:
                             log.info("定时备份跳过 %s：已有进行中的任务", d["udid"])
-                    jobs.cleanup_retention()
                     # 这里不再发 webhook：任务结果（成功/失败/取消）由 notify
                     # 在每个任务收尾时推送，触发通知只会制造噪音。
         except Exception as e:

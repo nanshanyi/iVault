@@ -238,7 +238,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
   display:flex;align-items:center;justify-content:center;transition:.18s}
 .wiz-close svg{width:14px;height:14px}
 .wiz-close:hover{background:var(--card-hover);border-color:var(--stroke);color:var(--txt)}
-/* —— 快照日志浮层 —— */
+/* —— 备份记录日志浮层 —— */
 .log-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:4px}
 .log-wrap{margin:16px 0 0;background:#060a0f;border:1px solid var(--stroke);border-radius:12px;
   padding:14px 16px;font-family:var(--mono);font-size:11.5px;line-height:1.8;color:#8fe8c2;
@@ -359,21 +359,6 @@ td b{color:var(--txt);font-weight:600}
   font-size:13.5px;font-weight:600;color-scheme:var(--cs);width:108px;cursor:pointer}
 .time-ipt input::-webkit-calendar-picker-indicator{opacity:.6;cursor:pointer}
 .time-ipt.off{opacity:.42;pointer-events:none}
-
-/* ===== 保留份数滑杆 ===== */
-.range-wrap{width:236px;flex-shrink:0}
-.range-line{display:flex;align-items:center;gap:13px}
-.range{flex:1;-webkit-appearance:none;appearance:none;height:6px;border-radius:99px;outline:none;
-  background:linear-gradient(90deg,var(--green) 0 var(--fill,44.4%),var(--track) var(--fill,44.4%) 100%);cursor:pointer}
-.range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:18px;height:18px;border-radius:50%;
-  background:#fff;border:3px solid var(--green);box-shadow:0 2px 8px rgba(0,0,0,.28);
-  cursor:grab;transition:transform .15s}
-.range::-webkit-slider-thumb:active{transform:scale(1.16);cursor:grabbing}
-.range::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:#fff;
-  border:3px solid var(--green);box-shadow:0 2px 8px rgba(0,0,0,.28);cursor:grab}
-.range:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--green-dim)}
-.range-val{min-width:44px;text-align:right;font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green2)}
-.range-ticks{display:flex;justify-content:space-between;font-size:10.5px;color:var(--txt3);margin-top:8px;padding-right:57px}
 
 /* ===== 登录 ===== */
 .auth-input{width:260px;background:var(--input-bg);border:1px solid var(--stroke);border-radius:10px;
@@ -556,16 +541,15 @@ td b{color:var(--txt);font-weight:600}
 <section class="view" id="view-library">
   <div class="page-head">
     <div><h2>备份库</h2><p>Apple MobileSync 格式 · 可被 Finder / iTunes / iMazing 直接识别与恢复</p></div>
-    <span class="badge g" id="retBadge">保留策略：—</span>
   </div>
   <div class="card" style="padding:0">
     <table>
       <thead><tr><th>记录</th><th>设备</th><th>类型</th><th>大小</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
-      <tbody id="snapBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+      <tbody id="backupBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
     </table>
     <div style="padding:14px 20px;font-size:12px;color:var(--txt3);border-top:1px solid var(--stroke);line-height:1.8">
-      磁盘上目前只保留<strong style="color:var(--txt2)">最新一次可恢复状态</strong>（idevicebackup2 持续更新同一目录）；
-      这里的记录是时间点标记，删除记录不会释放磁盘空间，磁盘上的多时间点版本计划在后续版本支持
+      备份为单目录覆盖模式：新备份增量更新同一个目录，磁盘上始终只有<strong style="color:var(--txt2)">最新一次可恢复状态</strong>；
+      这里的记录是任务台账，删除记录不会释放磁盘空间
     </div>
   </div>
 </section>
@@ -576,17 +560,9 @@ td b{color:var(--txt);font-weight:600}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
     <div>
       <div class="card" style="margin-bottom:16px">
-        <b style="font-size:14.5px">存储与保留</b>
+        <b style="font-size:14.5px">存储</b>
         <div class="set-row"><div><div class="k">备份存储路径</div><div class="d">备份库与配对证书均保存在此目录（容器挂载卷）</div></div>
           <div class="path-ipt" id="setPath">—</div></div>
-        <div class="set-row"><div><div class="k">保留记录数</div><div class="d">每台设备最多保留的记录条数，超出的最旧记录由定时任务回收。<br>注意：目前磁盘上只有最新一次可恢复备份，保留数仅作用于记录条目</div></div>
-          <div class="range-wrap">
-            <div class="range-line">
-              <input type="range" class="range" id="retRange" min="1" max="10" step="1" value="5" aria-label="保留记录数">
-              <span class="range-val" id="retVal">5 份</span>
-            </div>
-            <div class="range-ticks"><span>1 份 · 精简</span><span>10 份 · 完整</span></div>
-          </div></div>
       </div>
       <div class="card">
         <b style="font-size:14.5px">定时计划</b>
@@ -638,7 +614,7 @@ td b{color:var(--txt);font-weight:600}
   </div>
 </div>
 
-<!-- 快照日志：回看某次备份/恢复的输出。与向导同一套浮层，避免挤压页面布局 -->
+<!-- 备份记录日志：回看某次备份/恢复的输出。与向导同一套浮层，避免挤压页面布局 -->
 <div class="wiz-overlay" id="logOverlay" style="display:none">
   <div class="card wizard" role="dialog" aria-modal="true" aria-label="任务日志" style="max-width:780px">
     <div class="log-head">
@@ -651,7 +627,7 @@ td b{color:var(--txt);font-weight:600}
     <pre class="log-wrap" id="logBody">加载中…</pre>
     <div class="wiz-actions">
       <button class="btn ghost" onclick="closeLog()">关闭</button>
-      <button class="btn" onclick="copySnapshotLog(this)">复制日志</button>
+      <button class="btn" onclick="copyBackupLog(this)">复制日志</button>
     </div>
     <button class="wiz-close" onclick="closeLog()" title="关闭（Esc）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>

@@ -36,7 +36,7 @@ def _post(url: str, payload: dict, timeout: float = 5):
 
 
 def task_finished(kind: str, status: str, udid: str, *,
-                  snapshot_id: int | None = None, error: str = "",
+                  backup_id: int | None = None, error: str = "",
                   size_bytes: int | None = None,
                   duration_s: float | None = None) -> None:
     """任务收尾时调用。同步入口：在事件循环里时丢线程池执行，绝不阻塞收尾路径。"""
@@ -73,7 +73,7 @@ def task_finished(kind: str, status: str, udid: str, *,
         "status": status,
         "udid": udid,
         "device": name,
-        "snapshot_id": snapshot_id,
+        "backup_id": backup_id,
         "error": error,
         "size_bytes": size_bytes,
         "duration_s": round(duration_s, 1) if duration_s else None,

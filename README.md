@@ -46,7 +46,7 @@ chmod +x install.sh && ./install.sh
 
 浏览器打开 `http://<NAS-IP>:8666` → 用数据线把 iPhone 插到 **NAS 机身**的 USB 口（不是电脑）→ 设备管理 → 添加设备 → 手机上点「信任」→ 立即备份。
 
-> 备份进度到 100% 后别急着拔线，后端还要写完快照才算落盘，以页面上的任务状态为准。
+> 备份进度到 100% 后别急着拔线，后端还要写完备份数据才算落盘，以页面上的任务状态为准。
 
 不想用脚本的话，手写三步：
 
@@ -69,9 +69,8 @@ docker compose pull && docker compose up -d --no-build
 | USB 首次配对 | 信任授权 + 证书持久化，重装容器不用重配 |
 | 全量 / 增量整机备份 | Apple MobileSync 格式，目录可直接拷到 Mac 用 Finder 恢复 |
 | 实时进度 | SSE 推送进度环、速率与终端日志，断线重连不丢状态 |
-| 备份记录 | 列表、删除记录、恢复到设备；每条记录可回看完整任务日志 |
+| 备份记录 | 任务台账：时间、类型、大小、状态与完整日志，可删除单条、恢复到设备 |
 | 定时备份 | 每天自选时刻，服务端调度 |
-| 保留策略 | 1–10 条，滑杆调节（当前仅作用于记录，见「已知限制」） |
 | Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
 | 访问密码 | `IVAULT_PASSWORD` 启用登录鉴权，HttpOnly Cookie 会话，SSE 同套保护 |
 | 失败早发现 | Webhook 在每次任务结束时推送结果（失败带原因）；备份前检查磁盘剩余空间 |
@@ -135,8 +134,8 @@ iPhone ──Wi-Fi──► mDNS ──► netmuxd ───────┴─�
 backend/
   main.py     REST API、SSE 流、设备轮询、定时调度
   device.py   idevice_id / ideviceinfo / idevicepair 封装 + 配对向导状态机
-  jobs.py     idevicebackup2 子进程管理、进度解析、取消、保留策略
-  store.py    SQLite（devices / snapshots / settings）
+  jobs.py     idevicebackup2 子进程管理、进度解析、取消
+  store.py    SQLite（devices / backups / settings）
   config.py   路径与工具链配置
 frontend/
   index.html  单页界面（内联 CSS，零依赖）
@@ -198,11 +197,11 @@ GET    /api/pair/{sid}/events      SSE：waiting → found → pairing → done 
 POST   /api/backups                {udid} 触发备份
 GET    /api/jobs/{id}/events       SSE：progress / log / done / failed
 POST   /api/jobs/{id}/cancel       取消任务
-GET    /api/snapshots              备份记录列表（含 has_log / error）
-GET    /api/snapshots/{id}/log     某次任务的完整日志（事后排查）
-DELETE /api/snapshots/{id}         删除备份记录
+GET    /api/backups                备份记录列表（含 has_log / error）
+GET    /api/backups/{id}/log       某次任务的完整日志（事后排查）
+DELETE /api/backups/{id}           删除备份记录
 POST   /api/restore                {udid} 恢复最近一份成功备份
-GET/PUT /api/settings              定时、保留数、Webhook
+GET/PUT /api/settings              定时、Webhook
 GET    /api/diagnostics            版本 / 系统 / 设备 / 最近告警，纯文本一键复制
 GET    /api/docs                   Swagger 文档
 ```
@@ -217,16 +216,16 @@ GET    /api/docs                   Swagger 文档
 
 | 场景 | 看哪里 | 保留多久 |
 |---|---|---|
-| 某次备份/恢复为什么失败 | 界面「备份任务 → 历史」状态旁的**日志**按钮 | 随快照记录永久保存 |
+| 某次备份/恢复为什么失败 | 界面「备份任务 → 历史」状态旁的**日志**按钮 | 随备份记录永久保存 |
 | 配对 / 无线通道为什么不工作 | `docker compose logs ivault`，找 `[usbmuxd]` `[netmuxd]` 前缀 | 容器日志，10MB×3 自动轮转 |
 | 说不清哪里不对 | 设置 → 关于 → **诊断信息 → 复制** | 内存里最近 200 条告警 |
 
 细节：
 
-- **任务日志落库**。`idevicebackup2` 的输出（含时间戳与完整命令行）在任务结束时写进 `snapshots.log`，只留末尾 24KB。以前这些只活在内存里，任务一结束就没了，事后只能看到一条 FAILED。
+- **任务日志落库**。`idevicebackup2` 的输出（含时间戳与完整命令行）在任务结束时写进 `backups.log`，只留末尾 24KB。以前这些只活在内存里，任务一结束就没了，事后只能看到一条 FAILED。
 - **容器日志一处看全**。`usbmuxd` 和 `netmuxd` 不再写 `/var/log/*.log`（容器里没有持久卷，重启即丢），而是带前缀直接进 stdout。想看 usbmuxd 的详细过程：`IVAULT_USBMUXD_VERBOSE=1`。
 - **轮询不再刷屏**。前端每 6 秒刷新会打 4 个请求，一天五万多条；`uvicorn` 的 access log 已关掉，改由中间件只记**出错、写操作、超过 1.5 秒的请求**。
-- **诊断信息**是纯文本，含版本、系统、运行时长、设备与连接方式、最近快照与失败原因、最近 200 条告警。留一份在手上，过几天回来排查也够用。
+- **诊断信息**是纯文本，含版本、系统、运行时长、设备与连接方式、最近备份记录与失败原因、最近 200 条告警。留一份在手上，过几天回来排查也够用。
 
 ### 插上 iPhone 却一直显示离线
 
@@ -237,7 +236,7 @@ GET    /api/docs                   Swagger 文档
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 插线后 1~2 秒自己变在线 | 正常，看护在重启 `usbmuxd` 重扫 | 无需处理 |
-| 日志有 `[usb-watchdog] ... 重新扫描`，紧接着 `libusb couldn't open USB device ... errno=2` | compose 里用 `devices:` 挂的 USB 总线，那是**容器创建时的节点快照**，插拔后新节点在容器内不存在 | 改成 `volumes: - /dev/bus/usb:/dev/bus/usb` |
+| 日志有 `[usb-watchdog] ... 重新扫描`，紧接着 `libusb couldn't open USB device ... errno=2` | compose 里用 `devices:` 挂的 USB 总线，那是**容器创建时的节点备份记录**，插拔后新节点在容器内不存在 | 改成 `volumes: - /dev/bus/usb:/dev/bus/usb` |
 | 拔线后手机仍在广播 mDNS，但页面显示离线 | 无线通道探活失败 | 见下一节「无线（Wi-Fi）设备一直不出现」 |
 
 看护由 `IVAULT_USB_WATCHDOG` 控制，默认开启；设成 `0` 会回到旧行为（容器运行中插线不识别，需要重启容器）。
@@ -321,7 +320,7 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 
 ## 已知限制
 
-1. **备份共享基线目录**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，磁盘上只有「最新状态」。备份库里的历史记录是时间点标记，删记录不会立刻释放空间——「保留 1–10 份」当前也只作用于记录条目，并不能在磁盘上留存多个可恢复的时间点版本。
+1. **备份是单目录覆盖模式，没有快照机制**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，新备份覆写旧状态，磁盘上只有「最新一次可恢复状态」，不能回滚到历史时间点。备份库里的历史记录只是任务台账，删记录不会释放空间。中途失败的增量备份可能让这份唯一状态处于不一致，需重新跑一次成功备份修复。
 2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在 iPhone 侧开启加密备份并牢记密码——密码不会写到 NAS 上。
 3. **无线备份的两个硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次。
 4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`——且必须用 `volumes:` 做 bind mount，写 `devices:` 会让热插拔失效（见「出问题怎么查」）。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。

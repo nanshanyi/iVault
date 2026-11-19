@@ -9,7 +9,7 @@ idevicebackup2 的输出里包含 `Total progress: N`（0-100 整数）逐行刷
   先过注册表，否则同一台设备上会并出两个进程同时写同一个备份目录。
 - 子进程一旦起来，任何退出路径都要回收（`_pump()` 的 finally + `_fail()`），
   否则任务对象被 done_callback 摘掉了，进程还在后台跑。
-- 快照记录只能收尾一次（`_close_snapshot()`），异常路径与正常路径不会互相覆盖。
+- 备份记录只能收尾一次（`_close_backup()`），异常路径与正常路径不会互相覆盖。
 """
 import asyncio
 import datetime
@@ -37,8 +37,8 @@ _jobs: dict[str, "Job"] = {}
 class DeviceBusy(RuntimeError):
     """同一台设备同时只允许一个任务。
 
-    备份与恢复都会动设备端的数据，而备份目录又是同一份可写状态（增量快照
-    靠在同一目录里追加），并发跑不只会互相拖慢，还可能把快照写坏。
+    备份与恢复都会动设备端的数据，而备份目录又是同一份可写状态（增量备份
+    靠在同一目录里追加），并发跑不只会互相拖慢，还可能把备份目录写坏。
     """
 
     def __init__(self, job: "Job"):
@@ -48,11 +48,11 @@ class DeviceBusy(RuntimeError):
 
 
 class Job:
-    def __init__(self, job_id: str, udid: str, kind: str = "BACKUP", snap_id: int | None = None):
+    def __init__(self, job_id: str, udid: str, kind: str = "BACKUP", backup_id: int | None = None):
         self.id = job_id
         self.udid = udid
         self.kind = kind                      # BACKUP | RESTORE
-        self.snap_id = snap_id
+        self.backup_id = backup_id
         self.subscribers: list[asyncio.Queue] = []
         self.status = "RUNNING"               # RUNNING | DONE | FAILED | CANCELED
         self.progress = 0
@@ -64,7 +64,7 @@ class Job:
         self.started_at = time.time()         # 绝对时间：前端重连后据此还原计时
         self.rc: int | None = None
         self.finalized = False                # 事件只收尾一次
-        self._snap_closed = False             # 快照记录只收尾一次
+        self._backup_closed = False             # 备份记录只收尾一次
         self._cancel_requested = False        # 取消可能早于子进程创建
 
     # ----- 事件广播 -----
@@ -100,29 +100,29 @@ class Job:
         return (header + "\n" + body) if header else body
 
     def _persist_log(self, error: str = ""):
-        """把日志落到快照记录里；失败也不能影响任务收尾。"""
-        if not self.snap_id:
+        """把日志落到备份记录里；失败也不能影响任务收尾。"""
+        if not self.backup_id:
             return
         header = (f"# {self.kind} {self.udid}  {self.status}  "
                   f"{datetime.datetime.now().isoformat(timespec='seconds')}")
         try:
-            store.save_snapshot_log(self.snap_id, self._log_text(header), error)
+            store.save_backup_log(self.backup_id, self._log_text(header), error)
         except Exception as e:  # noqa: BLE001
-            log.warning("快照 #%s 日志落库失败：%s", self.snap_id, e)
+            log.warning("备份记录 #%s 日志落库失败：%s", self.backup_id, e)
 
-    def _close_snapshot(self, status: str, **extra):
-        """快照收尾，且只写一次。
+    def _close_backup(self, status: str, **extra):
+        """备份记录收尾，且只写一次。
 
         正常结束、异常中断、用户取消三条路径都会走到这里；先到先算，
         后到的不会把已经写好的 COMPLETE 又盖成 FAILED。
         """
-        if not self.snap_id or self._snap_closed:
+        if not self.backup_id or self._backup_closed:
             return
-        self._snap_closed = True
+        self._backup_closed = True
         try:
-            store.finish_snapshot(self.snap_id, status=status, **extra)
+            store.finish_backup(self.backup_id, status=status, **extra)
         except Exception as e:  # noqa: BLE001
-            log.warning("快照 #%s 收尾失败：%s", self.snap_id, e)
+            log.warning("备份记录 #%s 收尾失败：%s", self.backup_id, e)
 
     # ----- 收尾 -----
 
@@ -146,7 +146,7 @@ class Job:
         try:
             notify.task_finished(
                 self.kind, status, self.udid,
-                snapshot_id=self.snap_id,
+                backup_id=self.backup_id,
                 error=extra.get("error", ""),
                 size_bytes=extra.get("size"),
                 duration_s=time.time() - self.started_at,
@@ -178,12 +178,12 @@ class Job:
             log.warning("任务 %s 的子进程 pid=%s 未能回收", self.id, proc.pid)
 
     async def _fail(self, e: BaseException):
-        """异常路径的统一收尾：回收进程、快照标失败、通知订阅者。"""
+        """异常路径的统一收尾：回收进程、备份记录标失败、通知订阅者。"""
         msg = f"任务异常中断：{e!r}" if not str(e) else f"任务异常中断：{e}"
         log.error("任务 %s 失败：%r", self.id, e, exc_info=True)
         self.add_log(msg)
         await self._kill_proc()
-        self._close_snapshot("FAILED", error=msg)
+        self._close_backup("FAILED", error=msg)
         self._finish("FAILED", error=msg)
 
     # ----- 执行 -----
@@ -195,7 +195,7 @@ class Job:
         """
         self.add_log(f"$ {' '.join(args)}")
         if self._cancel_requested:
-            # 还没起进程就被取消：连快照都不该开始写
+            # 还没起进程就被取消：连备份记录都不该开始写
             return -1
         try:
             self.proc = await asyncio.create_subprocess_exec(
@@ -232,7 +232,7 @@ class Job:
         return rc
 
     async def run_backup(self):
-        """执行一次备份。增量由 idevicebackup2 自动判断（目标目录已有快照则增量）。"""
+        """执行一次备份。增量由 idevicebackup2 自动判断（目标目录已有备份数据则增量）。"""
         try:
             await self._run_backup()
         except asyncio.CancelledError:
@@ -247,19 +247,19 @@ class Job:
 
     async def _run_backup(self):
         store.get_device(self.udid)           # 设备记录不存在时尽早暴露，别等进程报错
-        snap_dir = os.path.join(config.BACKUP_DIR, self.udid)
-        os.makedirs(snap_dir, exist_ok=True)
+        dev_dir = os.path.join(config.BACKUP_DIR, self.udid)
+        os.makedirs(dev_dir, exist_ok=True)
         # 增量与否的判断依据是「磁盘上是否已有成功完成的备份基线」，
         # 不是最近一条记录——上一轮失败后基线目录仍在，这轮实际跑的还是增量。
         # 只看最近 1 条会把「失败后的正常增量」误标成 FULL，界面因此说谎。
-        prior = store.list_snapshots(self.udid, limit=50)
-        snap_type = "INCREMENTAL" if any(
+        prior = store.list_backups(self.udid, limit=50)
+        backup_type = "INCREMENTAL" if any(
             s["status"] == "COMPLETE" for s in prior
         ) else "FULL"
 
-        self.snap_id = store.create_snapshot(self.udid, snap_type=snap_type)
+        self.backup_id = store.create_backup(self.udid, backup_type=backup_type)
         if self._cancel_requested:
-            self._close_snapshot("CANCELED", error="启动前已取消")
+            self._close_backup("CANCELED", error="启动前已取消")
             self._finish("CANCELED")
             return
 
@@ -271,7 +271,7 @@ class Job:
                    f"低于安全下限 {config.MIN_FREE_GB:g} GB。"
                    "请清理备份盘，或在 .env 里调低 IVAULT_MIN_FREE_GB")
             self.add_log(err)
-            self._close_snapshot("FAILED", error=err)
+            self._close_backup("FAILED", error=err)
             self._finish("FAILED", error=err)
             return
 
@@ -281,26 +281,26 @@ class Job:
         ])
 
         if self._cancel_requested or self.status == "CANCELED":
-            self._close_snapshot("CANCELED")
+            self._close_backup("CANCELED")
             self._finish("CANCELED")
             return
         if rc == 0:
             # last_backup_at 只在真正成功时更新：失败的任务不能让设备卡片
             # 显示「今天已备份」——那是健康状态里最容易被误读的字段。
             store.touch_last_backup(self.udid)
-            size = await _dir_size(snap_dir)
-            self._close_snapshot("COMPLETE", size_bytes=size, snap_type=snap_type)
-            self._finish("DONE", progress=100, size=size, snapshot=self.snap_id)
+            size = await _dir_size(dev_dir)
+            self._close_backup("COMPLETE", size_bytes=size, backup_type=backup_type)
+            self._finish("DONE", progress=100, size=size, backup_id=self.backup_id)
         else:
             err = f"idevicebackup2 退出码 {rc}"
-            self._close_snapshot("FAILED", error=err)
+            self._close_backup("FAILED", error=err)
             self._finish("FAILED", error=err)
 
     async def cancel(self):
         if self.finalized or self.status != "RUNNING":
             return
         # 先立旗再动进程：取消有可能早于 create_subprocess_exec（握手前的
-        # 建目录、建快照都是同步操作，但那一步的 await 仍在）。只改状态的话，
+        # 建目录、建备份记录都是同步操作，但那一步的 await 仍在）。只改状态的话，
         # 运行的协程看不见旗子，照样会把整轮备份跑完。
         self._cancel_requested = True
         self.status = "CANCELED"
@@ -387,9 +387,9 @@ def start_backup(udid: str, job_id: str) -> Job:
 
 
 def start_restore(udid: str, job_id: str, source_udid: str | None = None):
-    """恢复最近一份 COMPLETE 快照到当前设备。
+    """恢复最近一次成功完成的备份到当前设备。
 
-    注意：增量快照依赖基线目录，idevicebackup2 restore 直接指向备份根目录
+    注意：增量备份依赖基线目录，idevicebackup2 restore 直接指向备份根目录
     即可由其内部链接解析完整数据。
     """
     _claim(udid)
@@ -437,24 +437,3 @@ async def _run_restore_inner(job: "Job"):
                     "常见原因是未关闭「查找我的 iPhone」，请先关闭再重试；"
                     "若仍失败，可查看本条记录日志中的完整设备报错")
         job._finish("FAILED", error=err)
-
-
-def cleanup_retention():
-    """按保留策略删除最旧快照（仅清理库记录 + 磁盘上对应的基线目录不存在时跳过）。
-
-    注意：增量快照与全量共享基线目录（idevicebackup2 用同一 UDID 目录持续更新），
-    磁盘内容为「最新状态」，因此这里只回收超过保留数的记录，不删物理目录。
-    """
-    try:
-        keep = int(store.get_setting("retention") or 5)
-    except (TypeError, ValueError):
-        keep = 5
-    keep = max(1, min(10, keep))
-    removed = []
-    for dev in store.list_devices():
-        snaps = store.list_snapshots(dev["udid"], limit=10000)
-        completed = [s for s in snaps if s["status"] == "COMPLETE"]
-        for old in completed[keep:]:
-            store.delete_snapshot(old["id"])
-            removed.append(old["id"])
-    return removed

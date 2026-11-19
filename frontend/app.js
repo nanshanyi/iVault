@@ -137,7 +137,7 @@ function go(v) {
 document.querySelectorAll('.nav-item').forEach(e => { e.onclick = () => go(e.dataset.v); });
 
 /* ---------- 全局状态 ---------- */
-let state = { devices: [], snapshots: [], status: {}, settings: {} };
+let state = { devices: [], backups: [], status: {}, settings: {} };
 let pairSource = null, jobSource = null, jobStartedAt = 0, logCount = 0, jobTick = null;
 /* 当前跟踪的任务：取消按钮与断线重连都靠它，不能只依赖 EventSource.url ——
    连接一断 jobSource 就没了，那时候正是最需要「取消」的时候 */
@@ -145,11 +145,11 @@ let currentJob = null;
 let lastUnpairUdid = null;
 
 /* ---------- 热力图（最近 105 天，按完成日聚合） ---------- */
-function renderHeat(snaps) {
+function renderHeat(backups) {
   const h = $('heat');
   h.innerHTML = '';
   const byDay = {};
-  snaps.forEach(s => {
+  backups.forEach(s => {
     if (s.status === 'COMPLETE' && s.finished_at) {
       const d = new Date(s.finished_at * 1000);
       const k = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
@@ -189,14 +189,14 @@ function renderDashAction() {
 }
 
 function renderDashboard() {
-  const devs = state.devices, snaps = state.snapshots;
+  const devs = state.devices, backups = state.backups;
   const total = devs.reduce((a, d) => a + (d.total_bytes || 0), 0);
   $('stTotal').textContent = fmtSize(total);
-  $('stTotalSub').textContent = devs.length + ' 台设备 · ' + snaps.filter(s => s.status === 'COMPLETE').length + ' 条备份记录';
+  $('stTotalSub').textContent = devs.length + ' 台设备 · ' + backups.filter(s => s.status === 'COMPLETE').length + ' 条备份记录';
   $('stDevices').textContent = devs.length;
   const online = devs.filter(d => d.online).length;
   $('stDevicesSub').textContent = online + ' 台在线 · ' + (devs.length - online) + ' 台离线';
-  const last = snaps.find(s => s.status === 'COMPLETE');
+  const last = backups.find(s => s.status === 'COMPLETE');
   $('stLast').textContent = last ? fmtTs(last.finished_at) : '尚无备份';
   $('stLastSub').textContent = last ? ((last.type === 'FULL' ? '全量' : '增量') + ' · ' + fmtSize(last.size_bytes)) : '完成首次配对后即可开始备份';
   $('stFree').textContent = fmtSize(state.status.disk_free_bytes);
@@ -233,11 +233,11 @@ function renderDashboard() {
         '</div>');
   });
 
-  renderHeat(snaps);
+  renderHeat(backups);
   const tl = $('timeline');
   tl.innerHTML = '';
-  if (!snaps.length) tl.innerHTML = '<div class="tl-item"><div class="t">暂无备份记录</div><div class="d">完成首次备份后，这里会显示动态</div></div>';
-  snaps.slice(0, 5).forEach(s => {
+  if (!backups.length) tl.innerHTML = '<div class="tl-item"><div class="t">暂无备份记录</div><div class="d">完成首次备份后，这里会显示动态</div></div>';
+  backups.slice(0, 5).forEach(s => {
     const label = s.status === 'COMPLETE' ? '备份完成' : s.status === 'FAILED' ? '备份失败' : s.status === 'CANCELED' ? '已取消' : '进行中';
     const cls = s.status === 'COMPLETE' ? 'ok' : s.status === 'FAILED' ? 'warn' : '';
     tl.insertAdjacentHTML('beforeend',
@@ -270,7 +270,7 @@ function renderDevices() {
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">UDID</span><span class="num">···' + esc(d.udid.slice(-12)) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">配对时间</span><span>' + fmtTs(d.paired_at) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
-          '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">记录数 / 占用</span><span class="num">' + (d.snapshot_count || 0) + ' 条 · ' + fmtSize(d.total_bytes) + '</span></div>' +
+          '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">记录数 / 占用</span><span class="num">' + (d.backup_count || 0) + ' 条 · ' + fmtSize(d.total_bytes) + '</span></div>' +
         '</div>' +
         (live || !state.status.wifi_enabled ? '' :
           '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--txt3);line-height:1.75">' +
@@ -504,9 +504,9 @@ document.addEventListener('keydown', e => {
   if (ov && ov.style.display !== 'none') closeWizard();
 });
 
-/* ---------- 快照日志（事后排查用） ---------- */
+/* ---------- 备份记录日志（事后排查用） ---------- */
 const _logCache = {};
-async function openSnapshotLog(id) {
+async function openBackupLog(id) {
   $('logTitle').textContent = '备份记录 #' + String(id).padStart(4, '0') + ' 日志';
   $('logMeta').textContent = '';
   $('logStatus').textContent = '—';
@@ -516,7 +516,7 @@ async function openSnapshotLog(id) {
   lockScroll();
   $('logBody').scrollTop = 0;
   try {
-    const r = _logCache[id] || (await api('/api/snapshots/' + id + '/log'));
+    const r = _logCache[id] || (await api('/api/backups/' + id + '/log'));
     _logCache[id] = r;
     const parts = [devName(r.udid), '开始 ' + fmtTs(r.started_at)];
     if (r.finished_at) parts.push('结束 ' + fmtTs(r.finished_at));
@@ -527,7 +527,7 @@ async function openSnapshotLog(id) {
     $('logStatus').textContent = txt;
     $('logStatus').className = 'badge ' + cls;
     $('logBody').textContent = r.log ||
-      '这条记录没有保存日志。\n\n旧版本产生的任务不会落库；从本版本起，备份与恢复的输出都会存在快照记录里，随时可以回来查看。';
+      '这条记录没有保存日志。\n\n旧版本产生的任务不会落库；从本版本起，备份与恢复的输出都会存在备份记录里，随时可以回来查看。';
   } catch (e) {
     $('logBody').textContent = '读取失败：' + e.message;
   }
@@ -536,7 +536,7 @@ function closeLog() {
   $('logOverlay').style.display = 'none';
   unlockScroll();
 }
-function copySnapshotLog(btn) {
+function copyBackupLog(btn) {
   copyText($('logBody').textContent, btn, '复制日志');
 }
 
@@ -649,7 +649,7 @@ function attachJob(jobId, udid, startedAt, kind) {
       $('prPhase').textContent = phase;
       $('jPhase').textContent = phase;
     } else if (d.type === 'done') {
-      finishJob('✓ 备份完成 · 记录 #' + (d.snapshot || '?') + ' 已保存到 NAS');
+      finishJob('✓ 备份完成 · 记录 #' + (d.backup_id || '?') + ' 已保存到 NAS');
     } else if (d.type === 'failed') {
       finishJob('备份失败：' + (d.error || '未知错误'));
     } else if (d.type === 'canceled') {
@@ -712,19 +712,19 @@ async function cancelJob() {
 function renderHistory() {
   const body = $('histBody');
   body.innerHTML = '';
-  const snaps = state.snapshots.slice(0, 12);
-  if (!snaps.length) { body.innerHTML = '<tr><td colspan="6" class="empty">暂无备份记录，完成首次备份后会显示在这里</td></tr>'; return; }
+  const backups = state.backups.slice(0, 12);
+  if (!backups.length) { body.innerHTML = '<tr><td colspan="6" class="empty">暂无备份记录，完成首次备份后会显示在这里</td></tr>'; return; }
   (state.status.active_jobs || []).forEach(j => {
     body.insertAdjacentHTML('beforeend',
       '<tr><td><b>' + esc(devName(j.udid)) + '</b></td><td><span class="badge b">进行中</span></td><td class="num">当前</td><td class="num">—</td><td class="num">' + (j.progress || 0) + '%</td><td><span class="badge g">运行中</span></td></tr>');
   });
-  snaps.forEach(s => {
+  backups.forEach(s => {
     const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at : null;
     const badge = s.status === 'COMPLETE' ? 'g' : s.status === 'FAILED' ? 'r' : 'a';
     const label = s.status === 'COMPLETE' ? '成功' : s.status === 'FAILED' ? '失败' : s.status === 'CANCELED' ? '已取消' : '进行中';
     // 失败的记录即使没日志也留入口：至少能看到失败原因
     const logBtn = (s.has_log || s.status === 'FAILED')
-      ? '<button class="log-btn" onclick="event.stopPropagation();openSnapshotLog(' + s.id + ')" title="'
+      ? '<button class="log-btn" onclick="event.stopPropagation();openBackupLog(' + s.id + ')" title="'
         + (s.error ? esc(s.error) : '查看这次任务的输出') + '">日志</button>' : '';
     body.insertAdjacentHTML('beforeend',
       '<tr><td><b>' + esc(devName(s.udid)) + '</b></td>' +
@@ -736,24 +736,24 @@ function renderHistory() {
 }
 
 function renderLibrary() {
-  const body = $('snapBody');
+  const body = $('backupBody');
   body.innerHTML = '';
-  if (!state.snapshots.length) { body.innerHTML = '<tr><td colspan="6" class="empty">备份库为空</td></tr>'; return; }
-  state.snapshots.slice(0, 30).forEach(s => {
+  if (!state.backups.length) { body.innerHTML = '<tr><td colspan="6" class="empty">备份库为空</td></tr>'; return; }
+  state.backups.slice(0, 30).forEach(s => {
     const badge = s.status === 'COMPLETE' ? 'g' : s.status === 'FAILED' ? 'r' : 'a';
     const label = s.status === 'COMPLETE' ? '完整' : s.status === 'FAILED' ? '失败' : s.status === 'CANCELED' ? '已取消' : '进行中';
     body.insertAdjacentHTML('beforeend',
-      '<tr><td><b>' + fmtTs(s.started_at) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">SNAP-' + String(s.id).padStart(4, '0') + '</div></td>' +
+      '<tr><td><b>' + fmtTs(s.started_at) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">BKP-' + String(s.id).padStart(4, '0') + '</div></td>' +
       '<td>' + esc(devName(s.udid)) + '</td>' +
       '<td><span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span></td>' +
       '<td class="num">' + fmtSize(s.size_bytes) + '</td>' +
       '<td><span class="badge ' + badge + '">' + label + '</span></td>' +
       '<td style="text-align:right">' +
-        '<button class="btn ghost" style="font-size:12px;color:var(--green2)" onclick="restoreSnap(\'' + esc(s.udid) + '\')">恢复</button>' +
-        '<button class="btn ghost" style="font-size:12px;color:var(--red)" onclick="deleteSnap(' + s.id + ')">删除</button></td></tr>');
+        '<button class="btn ghost" style="font-size:12px;color:var(--green2)" onclick="restoreBackup(\'' + esc(s.udid) + '\')">恢复</button>' +
+        '<button class="btn ghost" style="font-size:12px;color:var(--red)" onclick="deleteBackup(' + s.id + ')">删除</button></td></tr>');
   });
 }
-async function restoreSnap(udid) {
+async function restoreBackup(udid) {
   if (!confirm('将最近一次成功备份恢复到「' + devName(udid) + '」？\n\n' +
     '· 恢复会覆盖设备当前数据，请先确认\n' +
     '· 需先在手机上关闭「查找我的 iPhone」（设置 → Apple 账户 → 查找），否则恢复会失败\n' +
@@ -764,18 +764,16 @@ async function restoreSnap(udid) {
     attachJob(r.job_id, udid, null, 'RESTORE');
   } catch (e) { toast('恢复失败：' + e.message); }
 }
-async function deleteSnap(id) {
+async function deleteBackup(id) {
   if (!confirm('删除备份记录 #' + id + '？\n注意：磁盘上目前只保留最新一次可恢复状态，删除记录只是移除展示条目，不会释放磁盘空间。')) return;
   try {
-    await api('/api/snapshots/' + id, { method: 'DELETE' });
+    await api('/api/backups/' + id, { method: 'DELETE' });
     toast('记录已删除');
     refresh();
   } catch (e) { toast('删除失败：' + e.message); }
 }
 
 /* ---------- 设置 ---------- */
-let retDragging = false;
-
 function toggleSwitch(el) {
   el.classList.toggle('on');
   syncTimeBox();
@@ -784,16 +782,10 @@ function toggleSwitch(el) {
 function syncTimeBox() {
   $('timeBox').classList.toggle('off', !$('swSched').classList.contains('on'));
 }
-function onRetInput() {
-  const v = Math.max(1, Math.min(10, parseInt($('retRange').value, 10) || 5));
-  $('retVal').textContent = v + ' 份';
-  $('retRange').style.setProperty('--fill', ((v - 1) / 9 * 100).toFixed(1) + '%');
-}
 async function saveSettings() {
   const payload = {
     schedule_enabled: $('swSched').classList.contains('on') ? 'true' : 'false',
     schedule_time: $('timeInput').value || '03:00',
-    retention: String(Math.max(1, Math.min(10, parseInt($('retRange').value, 10) || 5))),
     notify_webhook: $('whInput').value.trim()
   };
   try {
@@ -801,37 +793,24 @@ async function saveSettings() {
     toast('设置已保存');
     state.settings = payload;
     $('schedBadge').textContent = payload.schedule_enabled === 'true' ? '定时：每天 ' + payload.schedule_time : '定时：已关闭';
-    $('retBadge').textContent = '保留策略：最近 ' + payload.retention + ' 份 / 设备';
   } catch (e) { toast('保存失败：' + e.message); }
 }
 function renderSettings() {
   const s = state.settings || {};
   const on = s.schedule_enabled === 'true' || s.schedule_enabled === '1';
-  const ret = Math.max(1, Math.min(10, parseInt(s.retention, 10) || 5));
   const time = s.schedule_time || '03:00';
   $('swSched').classList.toggle('on', on);
   syncTimeBox();
   /* 每 6 秒的轮询刷新不要打断用户正在进行的输入 */
   if (document.activeElement !== $('timeInput')) $('timeInput').value = time;
-  if (!retDragging && document.activeElement !== $('retRange')) {
-    $('retRange').value = ret;
-    onRetInput();
-  }
   if (s.notify_webhook && document.activeElement !== $('whInput')) $('whInput').value = s.notify_webhook;
   $('schedBadge').textContent = on ? '定时：每天 ' + time : '定时：已关闭';
-  $('retBadge').textContent = '保留策略：最近 ' + ret + ' 份 / 设备';
   const authRow = $('authRow');
   if (authRow) authRow.style.display = state.status && state.status.auth ? 'flex' : 'none';
 }
 function wireSettings() {
-  const r = $('retRange');
-  r.addEventListener('pointerdown', () => { retDragging = true; });
-  ['pointerup', 'pointercancel'].forEach(ev => r.addEventListener(ev, () => { retDragging = false; }));
-  r.addEventListener('input', onRetInput);                                   // 拖动时只更新显示
-  r.addEventListener('change', () => { retDragging = false; saveSettings(); }); // 松手才提交
   $('timeInput').addEventListener('change', saveSettings);
   $('whInput').addEventListener('change', saveSettings);
-  onRetInput();
   syncTimeBox();
 }
 
@@ -846,10 +825,10 @@ function renderSideFoot(offline) {
 /* ---------- 初始化 ---------- */
 async function refresh() {
   try {
-    const [st, devs, snaps, settings] = await Promise.all([
-      api('/api/status'), api('/api/devices'), api('/api/snapshots'), api('/api/settings')
+    const [st, devs, backups, settings] = await Promise.all([
+      api('/api/status'), api('/api/devices'), api('/api/backups'), api('/api/settings')
     ]);
-    state.status = st; state.devices = devs; state.snapshots = snaps; state.settings = settings;
+    state.status = st; state.devices = devs; state.backups = backups; state.settings = settings;
     renderDashboard(); renderDevices(); renderHistory(); renderLibrary(); renderSettings();
     renderSideFoot(false);
     /* 刷新页面 / 断开重开之后，后端可能还有任务在跑：自动重新接上，

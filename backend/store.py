@@ -1,4 +1,4 @@
-"""SQLite 元数据存储（设备 / 快照 / 设置）。"""
+"""SQLite 元数据存储（设备 / 备份记录 / 设置）。"""
 import json
 import logging
 import sqlite3
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS devices (
     paired_at INTEGER,
     last_backup_at INTEGER
 );
-CREATE TABLE IF NOT EXISTS snapshots (
+CREATE TABLE IF NOT EXISTS backups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     udid TEXT NOT NULL,
     started_at INTEGER,
@@ -53,20 +53,7 @@ def conn() -> sqlite3.Connection:
 
 def init_db():
     conn().executescript(SCHEMA)
-    _migrate()
     conn().commit()
-
-
-def _migrate():
-    """给旧库补上后加的列（SQLite 没有 ADD COLUMN IF NOT EXISTS）。
-
-    老库里的快照没有日志，界面会显示「无日志」，不影响使用。
-    """
-    have = {r["name"] for r in conn().execute("PRAGMA table_info(snapshots)")}
-    for col, decl in (("error", "TEXT DEFAULT ''"), ("log", "TEXT DEFAULT ''")):
-        if col not in have:
-            conn().execute(f"ALTER TABLE snapshots ADD COLUMN {col} {decl}")
-            log.info("数据库迁移：snapshots 增加 %s 列", col)
 
 
 # ---------- devices ----------
@@ -107,20 +94,20 @@ def get_device(udid: str) -> dict | None:
     return dict(row) if row else None
 
 
-# ---------- snapshots ----------
+# ---------- backups ----------
 
-def create_snapshot(udid: str, snap_type="FULL", note="") -> int:
+def create_backup(udid: str, backup_type="FULL", note="") -> int:
     cur = conn().execute(
-        "INSERT INTO snapshots (udid, started_at, type, status, note) VALUES (?,?,?,'RUNNING',?)",
-        (udid, int(time.time()), snap_type, note),
+        "INSERT INTO backups (udid, started_at, type, status, note) VALUES (?,?,?,'RUNNING',?)",
+        (udid, int(time.time()), backup_type, note),
     )
     conn().commit()
     return cur.lastrowid
 
 
-def finish_snapshot(snap_id: int, status="COMPLETE", size_bytes=0, snap_type=None,
+def finish_backup(backup_id: int, status="COMPLETE", size_bytes=0, backup_type=None,
                     error: str = "", log_text: str | None = None):
-    """收尾一次快照。
+    """收尾一次备份记录。
 
     error / log_text 用于事后排查：日志只保留末尾 MAX_LOG_CHARS 字符，
     足够看清失败前后的上下文，又不会把库撑大（一次备份可刷出上千行）。
@@ -131,38 +118,38 @@ def finish_snapshot(snap_id: int, status="COMPLETE", size_bytes=0, snap_type=Non
                        + log_text[-MAX_LOG_CHARS:]
     sets = ["status=?", "size_bytes=?", "finished_at=?", "error=?"]
     vals: list = [status, size_bytes, int(time.time()), (error or "")[:500]]
-    if snap_type:
+    if backup_type:
         sets.append("type=?")
-        vals.append(snap_type)
+        vals.append(backup_type)
     if log_text is not None:
         sets.append("log=?")
         vals.append(log_text)
-    vals.append(snap_id)
-    conn().execute("UPDATE snapshots SET " + ", ".join(sets) + " WHERE id=?", vals)
+    vals.append(backup_id)
+    conn().execute("UPDATE backups SET " + ", ".join(sets) + " WHERE id=?", vals)
     conn().commit()
 
 
-# 单条快照日志的落库上限（字符）
+# 单条备份记录日志的落库上限（字符）
 MAX_LOG_CHARS = 24000
 
 
-def fail_interrupted_snapshots(reason: str = "服务重启，任务被中断") -> int:
+def fail_interrupted_backups(reason: str = "服务重启，任务被中断") -> int:
     """把上次进程留下的 RUNNING 记录标成 FAILED，返回条数。
 
-    任务状态只活在内存里：容器一重启，Job 对象没了，但快照记录还停在
-    RUNNING —— 界面上会永远显示「进行中」，保留策略也不会把它算进去。
+    任务状态只活在内存里：容器一重启，Job 对象没了，但备份记录还停在
+    RUNNING —— 界面上会永远显示「进行中」，也不会算进成功统计。
     启动时对账一次，让这些记录有个明确的结局。
     """
     cur = conn().execute(
-        "UPDATE snapshots SET status='FAILED', finished_at=?, error=? WHERE status='RUNNING'",
+        "UPDATE backups SET status='FAILED', finished_at=?, error=? WHERE status='RUNNING'",
         (int(time.time()), reason[:500]),
     )
     conn().commit()
     return cur.rowcount
 
 
-def save_snapshot_log(snap_id: int, log_text: str, error: str = ""):
-    """任务结束时把日志尾部与失败原因写进快照记录。
+def save_backup_log(backup_id: int, log_text: str, error: str = ""):
+    """任务结束时把日志尾部与失败原因写进备份记录。
 
     进程退出后 Job 对象就从内存里移除，日志若不落库就彻底没了——
     用户过几个小时再问「那次为什么失败」，只能看到一条 FAILED。
@@ -171,39 +158,39 @@ def save_snapshot_log(snap_id: int, log_text: str, error: str = ""):
         log_text = "…（前面 " + str(len(log_text) - MAX_LOG_CHARS) + " 字符已省略）\n" \
                    + log_text[-MAX_LOG_CHARS:]
     if error:
-        conn().execute("UPDATE snapshots SET log=?, error=? WHERE id=?",
-                       (log_text, error[:500], snap_id))
+        conn().execute("UPDATE backups SET log=?, error=? WHERE id=?",
+                       (log_text, error[:500], backup_id))
     else:
-        conn().execute("UPDATE snapshots SET log=? WHERE id=?", (log_text, snap_id))
+        conn().execute("UPDATE backups SET log=? WHERE id=?", (log_text, backup_id))
     conn().commit()
 
 
-def get_snapshot(snap_id: int) -> dict | None:
-    row = conn().execute("SELECT * FROM snapshots WHERE id=?", (snap_id,)).fetchone()
+def get_backup(backup_id: int) -> dict | None:
+    row = conn().execute("SELECT * FROM backups WHERE id=?", (backup_id,)).fetchone()
     return dict(row) if row else None
 
 
-def list_snapshots(udid: str | None = None, limit=100) -> list[dict]:
+def list_backups(udid: str | None = None, limit=100) -> list[dict]:
     """列表不返回 log 全文（单条可达几十 KB），只给 has_log 供前端决定是否显示入口。"""
     cols = ("id, udid, started_at, finished_at, size_bytes, type, status, note, error, "
             "CASE WHEN log IS NULL OR log='' THEN 0 ELSE 1 END AS has_log")
     if udid:
         rows = conn().execute(
-            f"SELECT {cols} FROM snapshots WHERE udid=? ORDER BY started_at DESC LIMIT ?",
+            f"SELECT {cols} FROM backups WHERE udid=? ORDER BY started_at DESC, id DESC LIMIT ?",
             (udid, limit),
         ).fetchall()
     else:
         rows = conn().execute(
-            f"SELECT {cols} FROM snapshots ORDER BY started_at DESC LIMIT ?", (limit,)
+            f"SELECT {cols} FROM backups ORDER BY started_at DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def delete_snapshot(snap_id: int) -> dict | None:
-    row = conn().execute("SELECT * FROM snapshots WHERE id=?", (snap_id,)).fetchone()
+def delete_backup(backup_id: int) -> dict | None:
+    row = conn().execute("SELECT * FROM backups WHERE id=?", (backup_id,)).fetchone()
     if not row:
         return None
-    conn().execute("DELETE FROM snapshots WHERE id=?", (snap_id,))
+    conn().execute("DELETE FROM backups WHERE id=?", (backup_id,))
     conn().commit()
     return dict(row)
 
@@ -213,7 +200,6 @@ def delete_snapshot(snap_id: int) -> dict | None:
 DEFAULTS = {
     "schedule_enabled": "true",
     "schedule_time": "03:00",
-    "retention": "5",
     "notify_webhook": "",
 }
 
@@ -242,4 +228,4 @@ def all_settings() -> dict:
 
 
 def dump_meta() -> dict:
-    return {"devices": list_devices(), "snapshots": list_snapshots()}
+    return {"devices": list_devices(), "backups": list_backups()}
