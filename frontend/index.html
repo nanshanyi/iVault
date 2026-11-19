@@ -456,7 +456,6 @@ td b{color:var(--txt);font-weight:600}
     <div class="nav-item active" data-v="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg><span>总览</span></div>
     <div class="nav-item" data-v="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg><span>设备管理</span></div>
     <div class="nav-item" data-v="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V3.2"/><path d="M7.4 7.6 12 3l4.6 4.6"/><path d="M4.6 16.2v2.4A2.4 2.4 0 0 0 7 21h10a2.4 2.4 0 0 0 2.4-2.4v-2.4"/></svg><span>备份任务</span><em class="nav-badge" id="navJobBadge" style="display:none">1</em></div>
-    <div class="nav-item" data-v="library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7c0-1.7 1.3-3 3-3h10c1.7 0 3 1.3 3 3v10c0 1.7-1.3 3-3 3H7c-1.7 0-3-1.3-3-3V7z"/><path d="M8 4v16M12.5 12h4"/></svg><span>备份库</span></div>
     <div class="nav-item" data-v="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>设置</span></div>
   </nav>
   <div class="side-tools">
@@ -579,34 +578,29 @@ td b{color:var(--txt);font-weight:600}
     </div>
     <div class="term" id="term"></div>
   </div>
+  <div class="card" style="margin-bottom:18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <b style="font-size:14.5px">当前可恢复</b>
+      <span class="badge b">单目录覆盖 · 每台设备一份</span>
+    </div>
+    <div id="restoreList"></div>
+    <div style="font-size:11.5px;color:var(--txt3);line-height:1.85;margin-top:12px;border-top:1px solid var(--stroke);padding-top:12px">
+      备份按设备写入同一个目录，磁盘上只保留<strong style="color:var(--txt2)">最新一次可恢复状态</strong>；
+      恢复永远只能回到这一份。下面的台账记录每一次任务，删除记录不会释放磁盘空间
+    </div>
+  </div>
   <div class="card" style="padding:0">
     <div style="padding:18px 20px;display:flex;justify-content:space-between;align-items:center">
-      <b style="font-size:14.5px">任务与备份历史</b>
+      <b style="font-size:14.5px">任务台账</b>
       <span class="badge b" id="schedBadge">定时：—</span>
     </div>
     <table>
-      <thead><tr><th>设备</th><th>类型</th><th>开始时间</th><th>耗时</th><th>数据量</th><th>状态</th></tr></thead>
-      <tbody id="histBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+      <thead><tr><th>设备</th><th>类型</th><th>开始时间</th><th>耗时</th><th>数据量</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
     </table>
   </div>
 </section>
 
-<!-- 备份库 -->
-<section class="view" id="view-library">
-  <div class="page-head">
-    <div><h2>备份库</h2><p>Apple MobileSync 格式 · 可被 Finder / iTunes / iMazing 直接识别与恢复</p></div>
-  </div>
-  <div class="card" style="padding:0">
-    <table>
-      <thead><tr><th>记录</th><th>设备</th><th>类型</th><th>大小</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
-      <tbody id="backupBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
-    </table>
-    <div style="padding:14px 20px;font-size:12px;color:var(--txt3);border-top:1px solid var(--stroke);line-height:1.8">
-      备份为单目录覆盖模式：新备份增量更新同一个目录，磁盘上始终只有<strong style="color:var(--txt2)">最新一次可恢复状态</strong>；
-      这里的记录是任务台账，删除记录不会释放磁盘空间
-    </div>
-  </div>
-</section>
 
 <!-- 设置 -->
 <section class="view" id="view-settings">

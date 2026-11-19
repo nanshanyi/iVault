@@ -403,7 +403,7 @@ function renderDevices() {
             /* 任务跑着的时候再点「立即备份」只会撞上「设备忙」，直接给进度入口 */
             ? '<button class="btn primary" style="flex:1;justify-content:center" onclick="go(\'tasks\')">查看进度</button>'
             : '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + esc(d.udid) + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>') +
-          '<button class="btn" onclick="go(\'library\')">记录</button>' +
+          '<button class="btn" onclick="go(\'tasks\')">台账</button>' +
           '<button class="btn danger"' + (job ? ' disabled title="任务进行中，取消配对会中断备份"' : '') + ' onclick="removeDevice(\'' + esc(d.udid) + '\')">取消配对</button>' +
         '</div></div>');
   });
@@ -893,15 +893,24 @@ async function cancelJob() {
   } catch (e) { toast('取消失败：' + e.message); }
 }
 
-/* ---------- 历史 / 备份库 ---------- */
+/* ---------- 任务台账 + 当前可恢复 ---------- */
+/* 台账：每次任务一行，只增不改。恢复入口不在这里——磁盘上只有一份可恢复状态，
+   挂在某条历史记录上会让人以为能选时间点。 */
 function renderHistory() {
   const body = $('histBody');
   body.innerHTML = '';
   const backups = state.backups.slice(0, 12);
-  if (!backups.length) { body.innerHTML = '<tr><td colspan="6" class="empty">暂无备份记录，完成首次备份后会显示在这里</td></tr>'; return; }
-  (state.status.active_jobs || []).forEach(j => {
+  const running = state.status.active_jobs || [];
+  if (!backups.length && !running.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">暂无任务记录，完成首次备份后会显示在这里</td></tr>';
+    return;
+  }
+  running.forEach(j => {
     body.insertAdjacentHTML('beforeend',
-      '<tr><td><b>' + esc(devName(j.udid)) + '</b></td><td><span class="badge b">进行中</span></td><td class="num">当前</td><td class="num">—</td><td class="num">' + (j.progress || 0) + '%</td><td><span class="badge g">运行中</span></td></tr>');
+      '<tr><td><b>' + esc(devName(j.udid)) + '</b></td><td><span class="badge b">进行中</span></td>' +
+      '<td class="num">当前</td><td class="num">—</td><td class="num">' + (j.progress || 0) + '%</td>' +
+      '<td><span class="badge g">运行中</span></td>' +
+      '<td style="text-align:right;font-size:12px;color:var(--txt3)">下方实时进度</td></tr>');
   });
   backups.forEach(s => {
     const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at : null;
@@ -911,31 +920,47 @@ function renderHistory() {
     const logBtn = (s.has_log || s.status === 'FAILED')
       ? '<button class="log-btn" onclick="event.stopPropagation();openBackupLog(' + s.id + ')" title="'
         + (s.error ? esc(s.error) : '查看这次任务的输出') + '">日志</button>' : '';
+    const delBtn = s.status === 'RUNNING' ? ''
+      : '<button class="btn ghost" style="font-size:12px;color:var(--txt3)" onclick="deleteBackup(' + s.id + ')" title="只删除这条记录，不动磁盘数据">删除</button>';
     body.insertAdjacentHTML('beforeend',
-      '<tr><td><b>' + esc(devName(s.udid)) + '</b></td>' +
+      '<tr><td><b>' + esc(devName(s.udid)) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">BKP-' + String(s.id).padStart(4, '0') + '</div></td>' +
       '<td><span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span></td>' +
       '<td class="num">' + fmtTs(s.started_at) + '</td><td class="num">' + fmtDur(dur) + '</td>' +
       '<td class="num">' + fmtSize(s.size_bytes) + '</td>' +
-      '<td><span class="badge ' + badge + '">' + label + '</span>' + logBtn + '</td></tr>');
+      '<td><span class="badge ' + badge + '">' + label + '</span></td>' +
+      '<td style="text-align:right;white-space:nowrap">' + logBtn + delBtn + '</td></tr>');
   });
 }
 
-function renderLibrary() {
-  const body = $('backupBody');
-  body.innerHTML = '';
-  if (!state.backups.length) { body.innerHTML = '<tr><td colspan="6" class="empty">备份库为空</td></tr>'; return; }
-  state.backups.slice(0, 30).forEach(s => {
-    const badge = s.status === 'COMPLETE' ? 'g' : s.status === 'FAILED' ? 'r' : 'a';
-    const label = s.status === 'COMPLETE' ? '完整' : s.status === 'FAILED' ? '失败' : s.status === 'CANCELED' ? '已取消' : '进行中';
-    body.insertAdjacentHTML('beforeend',
-      '<tr><td><b>' + fmtTs(s.started_at) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">BKP-' + String(s.id).padStart(4, '0') + '</div></td>' +
-      '<td>' + esc(devName(s.udid)) + '</td>' +
-      '<td><span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span></td>' +
-      '<td class="num">' + fmtSize(s.size_bytes) + '</td>' +
-      '<td><span class="badge ' + badge + '">' + label + '</span></td>' +
-      '<td style="text-align:right">' +
-        '<button class="btn ghost" style="font-size:12px;color:var(--green2)" onclick="restoreBackup(\'' + esc(s.udid) + '\')">恢复</button>' +
-        '<button class="btn ghost" style="font-size:12px;color:var(--red)" onclick="deleteBackup(' + s.id + ')">删除</button></td></tr>');
+/* 当前可恢复：每台设备只列最新一次成功备份，恢复入口只在这里 */
+function renderRestore() {
+  const box = $('restoreList');
+  if (!box) return;
+  const devs = state.devices || [];
+  const rows = devs.map(d => {
+    const ok = state.backups.find(s => s.udid === d.udid && s.status === 'COMPLETE');
+    return { d, ok };
+  });
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty" style="padding:18px 0">还没有配对的设备</div>';
+    return;
+  }
+  box.innerHTML = '';
+  rows.forEach(r => {
+    const b = r.ok;
+    box.insertAdjacentHTML('beforeend',
+      '<div style="display:flex;align-items:center;gap:13px;padding:11px 0;border-top:1px solid var(--stroke)">' +
+        '<div class="dev-ico" style="width:38px;height:38px"><svg viewBox="0 0 24 24" fill="none" stroke="' +
+          (b ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7" style="width:20px;height:20px">' +
+          '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
+        '<div style="flex:1;min-width:0"><b style="font-size:13.5px">' + esc(r.d.name || '设备') + '</b>' +
+          '<div style="font-size:11.5px;color:var(--txt3);margin-top:3px">' +
+            (b ? '最新成功备份：' + fmtTs(b.finished_at || b.started_at) + ' · ' + fmtSize(b.size_bytes)
+               : '还没有可恢复的备份') + '</div></div>' +
+        (b
+          ? '<button class="btn" style="flex:none" onclick="restoreBackup(\'' + esc(r.d.udid) + '\')">恢复</button>'
+          : '<span class="badge a">无备份</span>') +
+      '</div>');
   });
 }
 async function restoreBackup(udid) {
@@ -1054,7 +1079,7 @@ async function refresh() {
       api('/api/status'), api('/api/devices'), api('/api/backups'), api('/api/settings')
     ]);
     state.status = st; state.devices = devs; state.backups = backups; state.settings = settings;
-    renderDashboard(); renderDevices(); renderHistory(); renderLibrary(); renderSettings();
+    renderDashboard(); renderDevices(); renderHistory(); renderRestore(); renderSettings();
     renderSideFoot(false);
     /* 刷新页面 / 断开重开之后，后端可能还有任务在跑：自动重新接上，
        否则任务在跑却看不到进度，也没有「取消」入口。 */
