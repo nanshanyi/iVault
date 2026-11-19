@@ -892,7 +892,8 @@ async function saveSettings() {
     schedule_enabled: $('swSched').classList.contains('on') ? 'true' : 'false',
     schedule_time: $('timeInput').value || '03:00',
     notify_webhook: $('whInput').value.trim(),
-    notify_scope: document.querySelector('#notifyScope span.on')?.dataset.v || 'all'
+    notify_scope: document.querySelector('#notifyScope span.on')?.dataset.v || 'all',
+    log_verbose: document.querySelector('#logMode span.on')?.dataset.v || 'false'
   };
   try {
     await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -912,6 +913,8 @@ function renderSettings() {
   if (s.notify_webhook && document.activeElement !== $('whInput')) $('whInput').value = s.notify_webhook;
   const scope = s.notify_scope === 'failure' ? 'failure' : 'all';
   document.querySelectorAll('#notifyScope span').forEach(x => x.classList.toggle('on', x.dataset.v === scope));
+  const lv = s.log_verbose === 'true' ? 'true' : 'false';
+  document.querySelectorAll('#logMode span').forEach(x => x.classList.toggle('on', x.dataset.v === lv));
   $('schedBadge').textContent = on ? '定时：每天 ' + time : '定时：已关闭';
   /* 安全卡片：已启用显示会话与退出入口；未启用给出启用方法 */
   const auth = !!(state.status && state.status.auth);
@@ -942,6 +945,13 @@ function wireSettings() {
   document.querySelectorAll('#notifyScope span').forEach(sp => {
     sp.onclick = () => {
       document.querySelectorAll('#notifyScope span').forEach(x => x.classList.remove('on'));
+      sp.classList.add('on');
+      saveSettings();
+    };
+  });
+  document.querySelectorAll('#logMode span').forEach(sp => {
+    sp.onclick = () => {
+      document.querySelectorAll('#logMode span').forEach(x => x.classList.remove('on'));
       sp.classList.add('on');
       saveSettings();
     };

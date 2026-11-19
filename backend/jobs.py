@@ -52,6 +52,9 @@ PROGRESS_MIN_INTERVAL = 0.4
 PROGRESS_LOG_INTERVAL = 5.0
 # 文件级噪声行的最小间隔（它们只是「还在动」的证据，10 秒一条足够）。
 NOISE_LOG_INTERVAL = 10.0
+# 心跳：精简档不再记录文件级噪声，长时间没有任何输出时补一条，
+# 用来区分「慢慢跑」和「彻底卡死」。
+HEARTBEAT_INTERVAL = 300
 
 STREAM_LIMIT = 1 << 20
 
@@ -94,6 +97,9 @@ class Job:
         self._last_prog_ts = 0.0              # 上一次广播进度的时间（节流用）
         self._last_prog_log_ts = 0.0          # 上一次把整机进度写进日志的时间
         self._last_noise_ts = 0.0             # 上一次把文件级噪声写进日志的时间
+        self._last_log_ts = time.time()       # 上一次写日志的时间（心跳判据）
+        self._last_logged_pct = -1            # 精简档：上一次写进日志的整机百分比
+        self._verbose_cache: bool | None = None   # 日志详细度（设置项，懒加载）
 
     # ----- 事件广播 -----
 
@@ -114,6 +120,7 @@ class Job:
             self.subscribers.remove(q)
 
     def add_log(self, line: str):
+        self._last_log_ts = time.time()
         self.log_tail.append(line)
         if len(self.log_tail) > 400:
             self.log_tail.pop(0)
@@ -122,6 +129,15 @@ class Job:
         if len(self.log_stamped) > 2000:
             self.log_stamped.pop(0)
         self.broadcast({"type": "log", "line": line})
+
+    def _verbose(self) -> bool:
+        """日志详细度：默认精简（约 100 行/次，与备份时长无关），可切详细。"""
+        if self._verbose_cache is None:
+            try:
+                self._verbose_cache = (store.get_setting("log_verbose") or "") == "true"
+            except Exception:  # noqa: BLE001  设置读不到就按精简走
+                self._verbose_cache = False
+        return self._verbose_cache
 
     def _emit(self, seg: str):
         """处理子进程输出的一段：整机进度单独识别，其余进日志。
@@ -160,19 +176,43 @@ class Job:
                     self._last_prog_ts = now
                     self.broadcast({"type": "progress", "progress": self.progress,
                                     "phase": self.phase})
-                if now - self._last_prog_log_ts >= PROGRESS_LOG_INTERVAL:
-                    self._last_prog_log_ts = now
+                # 精简档：只在百分比真的变了才留一行 —— 整机进度只有 100 个刻度，
+                # 所以一次备份最多约 100 行，跟跑 1 小时还是 5 小时无关。
+                # 详细档：按时间留痕，便于看出「哪一段慢」。
+                if self._verbose():
+                    if now - self._last_prog_log_ts >= PROGRESS_LOG_INTERVAL:
+                        self._last_prog_log_ts = now
+                        self.add_log(line)
+                elif pct != self._last_logged_pct:
+                    self._last_logged_pct = pct
                     self.add_log(line)
                 return
 
-        # 文件级噪声（切换文件、单文件进度条）：只作「还在动」的证据，稀疏留痕
+        # 文件级噪声（切换文件、单文件进度条）：精简档直接丢弃——3.5 万个文件
+        # 就是几万行，它们对事后排查没有价值（真卡住时有心跳兜住）；
+        # 详细档稀疏留痕。
         if NOISE_RE.search(line) or FILE_PROG_RE.search(line):
-            if now - self._last_noise_ts >= NOISE_LOG_INTERVAL:
+            if self._verbose() and now - self._last_noise_ts >= NOISE_LOG_INTERVAL:
                 self._last_noise_ts = now
                 self.add_log(line)
             return
 
         self.add_log(line)
+
+    async def _heartbeat(self):
+        """长时间没有任何输出时补一条心跳，避免日志看起来像卡死。
+
+        精简档不再记录文件级噪声，如果设备传输很慢（大文件），中间可能几分钟
+        没有进度变化——这条心跳让人知道「还在跑，只是没动静」。
+        """
+        while not self.finalized:
+            await asyncio.sleep(30)
+            if self.finalized:
+                return
+            idle = time.time() - self._last_log_ts
+            if idle >= HEARTBEAT_INTERVAL:
+                self.add_log(f"仍在传输中，当前 {self.progress}%"
+                             f"（已 {int(idle // 60)} 分钟无新输出）")
 
     def _log_text(self, header: str = "") -> str:
         body = "\n".join(self.log_stamped)
@@ -293,6 +333,7 @@ class Job:
         try:
             assert self.proc.stdout
             buf = ""
+            hb = asyncio.create_task(self._heartbeat())
             # 用 read(n) 而不是 async for（后者按 \n 分帧）：进度条只发 \r，
             # 按行读会憋成一条巨型字符串，前端一次插入几 MB HTML 直接卡死，
             # 超长行还会触发 asyncio 的行长上限、把任务拽出循环。
@@ -311,6 +352,7 @@ class Job:
             if buf.strip():
                 self._emit(buf)
         finally:
+            hb.cancel()
             if self.proc and self.proc.returncode is None:
                 await self._kill_proc()
         rc = await self.proc.wait()

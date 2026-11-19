@@ -594,7 +594,7 @@ async def settings():
 
 @app.put("/api/settings")
 async def put_settings(body: dict):
-    allowed = {"schedule_enabled", "schedule_time", "notify_webhook", "notify_scope"}
+    allowed = {"schedule_enabled", "schedule_time", "notify_webhook", "notify_scope", "log_verbose"}
     # 校验并规范化：时间统一成 HH:MM。
     # 没有「保留份数」之类的设置：备份是单目录覆盖模式，磁盘上始终只有
     # 最新一次可恢复状态，历史记录就是任务台账，不回收也不需要配置。
@@ -605,6 +605,8 @@ async def put_settings(body: dict):
         body["schedule_time"] = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
     if "notify_scope" in body and str(body["notify_scope"]) not in ("all", "failure"):
         raise HTTPException(400, "通知范围只支持 all（全部结果）或 failure（仅失败与取消）")
+    if "log_verbose" in body and str(body["log_verbose"]) not in ("true", "false"):
+        raise HTTPException(400, "日志详细度只能是 true（详细）或 false（精简）")
     for k, v in body.items():
         if k in allowed:
             store.set_setting(k, str(v))
