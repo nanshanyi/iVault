@@ -73,7 +73,8 @@ docker compose pull && docker compose up -d --no-build
 | 定时备份 | 每天自选时刻，服务端调度 |
 | Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
 | 访问密码 | `IVAULT_PASSWORD` 启用登录鉴权，HttpOnly Cookie 会话，SSE 同套保护 |
-| 失败早发现 | Webhook 在每次任务结束时推送结果（失败带原因）；备份前检查磁盘剩余空间 |
+| Webhook 通知 | 每次任务结束推送，失败带原因。payload 含 `text`（企业微信等）与 `title`/`body`/`group`（Bark 填 `http://Bark服务器:端口/DeviceKey` 即可） |
+| 失败早发现 | 备份前检查磁盘剩余空间，低于阈值拒绝开始 |
 | 深浅色主题 | 跟随系统 / 手动切换 / 记忆选择 |
 
 ## 无线备份

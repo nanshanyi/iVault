@@ -581,7 +581,7 @@ td b{color:var(--txt);font-weight:600}
     <div>
       <div class="card" style="margin-bottom:16px">
         <b style="font-size:14.5px">通知</b>
-        <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">每次备份/恢复任务结束时 POST JSON（Bark / 企业微信机器人等），失败带具体原因</div></div>
+        <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">每次备份/恢复任务结束时 POST JSON，失败带具体原因。Bark 直接填 http://Bark服务器:端口/DeviceKey（payload 已含 title/body）</div></div>
           <div class="path-ipt"><input id="whInput" placeholder="https://…" style="background:none;border:none;color:var(--green2);font-family:var(--mono);font-size:12.5px;width:100%;outline:none"></div></div>
       </div>
       <div class="card">

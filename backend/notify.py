@@ -46,29 +46,41 @@ def task_finished(kind: str, status: str, udid: str, *,
 
     name = _device_label(udid)
     kind_cn = "备份" if kind == "BACKUP" else "恢复"
+    detail_parts: list[str] = []
     if status == "DONE":
-        text = f"iVault：{name} {kind_cn}完成"
+        outcome = "完成"
         # size_bytes 来自整个备份目录的统计：idevicebackup2 增量持续更新同一目录，
         # 这是「备份总大小」而不是本次新增的数据量，措辞必须如实。
         if size_bytes:
             if size_bytes >= 1024 ** 3:
-                text += f"，备份总大小 {size_bytes / 1024 ** 3:.1f} GB"
+                detail_parts.append(f"备份总大小 {size_bytes / 1024 ** 3:.1f} GB")
             else:
-                text += f"，备份总大小 {size_bytes / 1024 ** 2:.0f} MB"
+                detail_parts.append(f"备份总大小 {size_bytes / 1024 ** 2:.0f} MB")
         if duration_s:
             # 不足 1 分钟按秒显示，避免短任务出现「耗时 0 分钟」
             if duration_s < 60:
-                text += f"，耗时 {int(duration_s)} 秒"
+                detail_parts.append(f"耗时 {int(duration_s)} 秒")
             else:
-                text += f"，耗时 {duration_s / 60:.0f} 分钟"
+                detail_parts.append(f"耗时 {duration_s / 60:.0f} 分钟")
     elif status == "CANCELED":
-        text = f"iVault：{name} 的{kind_cn}任务已取消"
+        outcome = "已取消"
     else:
-        text = f"iVault：{name} {kind_cn}失败：{error or '未知原因'}"
+        outcome = "失败"
+        detail_parts.append(error or "未知原因")
+
+    title = f"iVault：{name} {kind_cn}{outcome}"
+    body = "，".join(detail_parts)
+    # text = title + 详情，供只认单个文本字段的接收端（企业微信机器人等）
+    text = f"{title}：{body}" if body else title
 
     payload = {
         "event": f"{kind.lower()}.{status.lower()}",
         "text": text,
+        # Bark 只认 title/body：直接把 Webhook 地址填成
+        # http://<Bark服务器>:<端口>/<DeviceKey> 即可推送
+        "title": title,
+        "body": body,
+        "group": "iVault",
         "kind": kind,
         "status": status,
         "udid": udid,
