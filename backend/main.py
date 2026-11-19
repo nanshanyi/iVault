@@ -66,7 +66,11 @@ for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
 _raw_ver = os.environ.get("IVAULT_VERSION", "0.4.0").strip()
 VERSION = _raw_ver[1:] if _raw_ver[:1] in ("v", "V") else _raw_ver
 
-app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
+# openapi_url 也挪进 /api：默认挂在根路径 /openapi.json，会绕过鉴权中间件
+# 把全部接口结构暴露给未登录访客。只是接口列表、拿不到数据，但一行就能堵上，
+# 没有理由留着；挪进来之后 /api/docs 照常可用（登录后）。
+app = FastAPI(title="iVault", version=VERSION,
+              docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 # 前端每 6 秒刷一轮状态，一次 4 个请求 —— 开着 uvicorn 的 access log 时，
 # 一天五万多条轮询记录会把真正的报错彻底淹掉。entrypoint 里已加 --no-access-log，

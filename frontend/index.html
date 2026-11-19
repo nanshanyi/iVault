@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>iVault · iPhone 备份中心</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <script>
 /* 侧栏收起状态尽早应用到 <html>，避免首屏先展开再收起闪一下 */
 try {
@@ -634,14 +637,14 @@ td b{color:var(--txt);font-weight:600}
     </button>
   </div>
 </div>
-<!-- 登录浮层：启用 IVAULT_PASSWORD 后，任一接口返回 401 时出现 -->
+<!-- 登录浮层：启用访问密码后，任一接口返回 401 时出现 -->
 <div class="wiz-overlay" id="authOverlay" style="display:none;z-index:90">
   <div class="card wizard" role="dialog" aria-modal="true" aria-label="登录" style="max-width:400px">
     <div class="wiz-body" style="min-height:0">
       <div class="big-ico"><svg viewBox="0 0 24 24" fill="none" stroke="#00e59b" stroke-width="1.7">
         <rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 017 0v2.5"/><path d="M12 14.5v2"/></svg></div>
       <h3>iVault 需要登录</h3>
-      <p>已启用访问密码（环境变量 IVAULT_PASSWORD）</p>
+      <p>本服务已启用访问密码保护</p>
       <input type="password" id="authPass" class="auth-input" placeholder="访问密码" autocomplete="current-password"
              onkeydown="if(event.key==='Enter')doLogin()">
       <p id="authErr" style="color:var(--red);font-size:12.5px;display:none;margin-top:-4px"></p>

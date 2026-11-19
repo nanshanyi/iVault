@@ -14,8 +14,10 @@ DB_PATH = os.path.join(DATA_DIR, "ivault.db")
 _DEFAULT_LOCKDOWN = "/var/db/lockdown" if sys.platform == "darwin" else "/var/lib/lockdown"
 LOCKDOWN_DIR = os.environ.get("IVAULT_LOCKDOWN", _DEFAULT_LOCKDOWN)
 
-HOST = os.environ.get("IVAULT_HOST", "0.0.0.0")
-PORT = int(os.environ.get("IVAULT_PORT", "8666"))
+# 注意：监听地址与端口不在这里读——entrypoint.sh 启动 uvicorn 时直接读
+# IVAULT_PORT 环境变量，监听地址固定 0.0.0.0（容器只有 host / bridge 两种
+# 网络模式，监听全部接口都是正确姿势）。曾经存在的 IVAULT_HOST / config.HOST
+# 从未生效过，已删除：留一个不起作用的开关只会误导人。
 
 
 def normalize_log_level(value: str | None, default: str = "INFO") -> str:
