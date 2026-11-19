@@ -34,6 +34,13 @@ log = logging.getLogger("ivault.jobs")
 OVERALL_RE = re.compile(r"Backup\s*\[[^\]]*\]\s*(\d{1,3})\s*%")
 TOTAL_RE = re.compile(r"Total progress:\s*(\d{1,3})")
 FILE_PROG_RE = re.compile(r"\d{1,3}(?:\.\d+)?%\s+[\d.]+\s*[KMGT]i?B\s*/")
+# 每切换一个文件就会刷一遍的三类行：3.5 万个文件足以刷出几万行日志。
+# 它们只是「活动迹象」，隔几秒留一条就够，不必逐条入库。
+NOISE_RE = re.compile(r"^(Status\s|Receiving\s|Sending\s)")
+# 报错行必须无条件保留：真实输出里错误常常粘在 Status 行后面
+# （`Status Receiving filesERROR: Could not receive from mobilebackup2 (-256)`），
+# 如果先按前缀判噪声，最有用的那行就没了。
+ERROR_RE = re.compile(r"(?i)\b(error|fatal|failed|failure|abort\w*|cannot|could not|denied|invalid|refused)\b")
 # 终端控制序列（清屏、光标上移等）：落库和前端都不该看到这些乱码
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
 
@@ -41,8 +48,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
 LINE_MAX = 400
 # 进度事件节流：两次广播至少间隔这么久，避免每毫秒一条把 SSE 和前端压垮。
 PROGRESS_MIN_INTERVAL = 0.4
-# 进度条写进终端日志的最小间隔：保留可读的轨迹，但不必每一帧都留痕。
-PROGRESS_LOG_INTERVAL = 2.0
+# 整机进度写进终端日志的最小间隔（界面上的进度环另有实时数据，日志只是留痕）。
+PROGRESS_LOG_INTERVAL = 5.0
+# 文件级噪声行的最小间隔（它们只是「还在动」的证据，10 秒一条足够）。
+NOISE_LOG_INTERVAL = 10.0
 
 STREAM_LIMIT = 1 << 20
 
@@ -83,7 +92,8 @@ class Job:
         self._backup_closed = False             # 备份记录只收尾一次
         self._cancel_requested = False        # 取消可能早于子进程创建
         self._last_prog_ts = 0.0              # 上一次广播进度的时间（节流用）
-        self._last_prog_log_ts = 0.0          # 上一次把进度条写进日志的时间
+        self._last_prog_log_ts = 0.0          # 上一次把整机进度写进日志的时间
+        self._last_noise_ts = 0.0             # 上一次把文件级噪声写进日志的时间
 
     # ----- 事件广播 -----
 
@@ -126,6 +136,11 @@ class Job:
             line = line[:LINE_MAX] + " …"
         now = time.time()
 
+        # 报错/告警优先：不节流、不判噪声，原样留下
+        if ERROR_RE.search(line):
+            self.add_log(line)
+            return
+
         # 整机进度：只认 `Backup [....] 3%` 这种标记，没有就退到 "Total progress:"
         m = OVERALL_RE.search(line)
         if not m:
@@ -150,10 +165,10 @@ class Job:
                     self.add_log(line)
                 return
 
-        # 单个文件的进度条：不参与整机进度，日志里隔两秒留一条做活动迹象
-        if FILE_PROG_RE.search(line) or "]" in line and "%" in line:
-            if now - self._last_prog_log_ts >= PROGRESS_LOG_INTERVAL:
-                self._last_prog_log_ts = now
+        # 文件级噪声（切换文件、单文件进度条）：只作「还在动」的证据，稀疏留痕
+        if NOISE_RE.search(line) or FILE_PROG_RE.search(line):
+            if now - self._last_noise_ts >= NOISE_LOG_INTERVAL:
+                self._last_noise_ts = now
                 self.add_log(line)
             return
 
