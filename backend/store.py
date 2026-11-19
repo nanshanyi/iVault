@@ -201,6 +201,9 @@ DEFAULTS = {
     "schedule_enabled": "true",
     "schedule_time": "03:00",
     "notify_webhook": "",
+    # 通知范围：all = 成功/失败/取消都推；failure = 只在失败或取消时推。
+    # 每天一次的成功通知对部分用户是打扰，这个偏好应该由用户选。
+    "notify_scope": "all",
 }
 
 

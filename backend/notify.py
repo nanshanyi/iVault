@@ -25,14 +25,48 @@ def _device_label(udid: str) -> str:
     return d.get("name") or d.get("model") or ("…" + udid[-6:])
 
 
+def _robot_payload(url: str, payload: dict) -> dict:
+    """按地址识别群机器人格式。
+
+    企业微信 / 飞书 / 钉钉的群机器人各有私有 JSON 结构，通用 payload 会被
+    拒收；Bark 与自定义接收端则吃完整 payload。URL 是最可靠的判别依据，
+    这样本项目不需要为每家机器人做设置项。
+    """
+    text = payload.get("text", "")
+    if "qyapi.weixin.qq.com" in url:
+        return {"msgtype": "text", "text": {"content": text}}
+    if "open.feishu.cn" in url:
+        return {"msg_type": "text", "content": {"text": text}}
+    if "oapi.dingtalk.com" in url:
+        return {"msgtype": "text", "text": {"content": text}}
+    return payload
+
+
 def _post(url: str, payload: dict, timeout: float = 5):
+    data = _robot_payload(url, payload)
     req = urllib.request.Request(
         url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        data=json.dumps(data, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=utf-8"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
         log.info("webhook 已送达（HTTP %s）", getattr(resp, "status", "?"))
+    # 群机器人常见「HTTP 200 + 响应体业务码失败」——只看状态码会把拒收
+    # 当成功，测试按钮就会假成功。errcode 是企业微信 / 钉钉（0=成功）；
+    # code 是飞书（0=成功）与 Bark（200=成功）。
+    try:
+        r = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return
+    if not isinstance(r, dict):
+        return
+    errcode = r.get("errcode")
+    if errcode is not None and errcode != 0:
+        raise RuntimeError(f"接收端返回业务错误 errcode={errcode} {r.get('errmsg') or ''}".strip())
+    code = r.get("code")
+    if code is not None and code not in (0, 200):
+        raise RuntimeError(f"接收端返回业务错误 code={code} {r.get('msg') or ''}".strip())
 
 
 def task_finished(kind: str, status: str, udid: str, *,
@@ -42,6 +76,11 @@ def task_finished(kind: str, status: str, udid: str, *,
     """任务收尾时调用。同步入口：在事件循环里时丢线程池执行，绝不阻塞收尾路径。"""
     url = (store.get_setting("notify_webhook") or "").strip()
     if not url:
+        return
+    # 通知范围：用户可选「仅失败与取消」——每天一次的成功推送对部分人是打扰。
+    # 测试通知（send_test）不受此开关影响，任何时候都发得出去。
+    scope = (store.get_setting("notify_scope") or "all").strip()
+    if scope == "failure" and status == "DONE":
         return
 
     name = _device_label(udid)
@@ -64,6 +103,8 @@ def task_finished(kind: str, status: str, udid: str, *,
                 detail_parts.append(f"耗时 {duration_s / 60:.0f} 分钟")
     elif status == "CANCELED":
         outcome = "已取消"
+        # Bark 对空 body 的容忍度随服务端版本而异：取消也带一句正文最稳
+        detail_parts.append("任务已被手动取消")
     else:
         outcome = "失败"
         detail_parts.append(error or "未知原因")
@@ -104,6 +145,18 @@ def task_finished(kind: str, status: str, udid: str, *,
         return
     # 任务收尾永远在事件循环里：走线程池，webhook 挂了也不能拖住任务收尾
     loop.run_in_executor(None, lambda: _safe_post(url, payload))
+
+
+def send_test(url: str):
+    """发送一条测试通知。失败直接抛异常，由调用方决定如何呈现给用户。"""
+    _post(url, {
+        "event": "test",
+        "text": "iVault 测试通知：Webhook 配置成功，之后每次备份 / 恢复的结果都会推送到这里",
+        "title": "iVault 测试通知",
+        "body": "Webhook 配置成功，之后每次备份 / 恢复的结果都会推送到这里",
+        "group": "iVault",
+        "ts": int(time.time()),
+    })
 
 
 def _safe_post(url: str, payload: dict):

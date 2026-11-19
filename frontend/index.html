@@ -378,7 +378,18 @@ td b{color:var(--txt);font-weight:600}
 
 .empty{text-align:center;padding:44px 20px;color:var(--txt3)}
 .empty p{font-size:13px;margin-top:12px;line-height:1.7}
-@media (max-width:1080px){.dash-grid{grid-template-columns:1fr}}
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+@media (max-width:1080px){.dash-grid,.settings-grid{grid-template-columns:1fr}}
+/* 手机竖屏：行内「标题 + 控件」左右布局改为上下堆叠，避免长路径与按钮互相挤压 */
+@media (max-width:640px){
+  .main{padding:20px 16px 48px}
+  .page-head{flex-direction:column;align-items:flex-start;gap:12px}
+  .page-head .btn{width:100%;justify-content:center}
+  .set-row{flex-direction:column;align-items:stretch;gap:10px}
+  .set-row .btn{align-self:flex-end}
+  .path-ipt{max-width:100%}
+  .path-ipt input{min-width:0}
+}
 
 </style>
 </head>
@@ -560,15 +571,11 @@ td b{color:var(--txt);font-weight:600}
 <!-- 设置 -->
 <section class="view" id="view-settings">
   <div class="page-head"><div><h2>设置</h2><p>所有更改即时保存到 NAS</p></div></div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+  <div class="settings-grid">
+
     <div>
       <div class="card" style="margin-bottom:16px">
-        <b style="font-size:14.5px">存储</b>
-        <div class="set-row"><div><div class="k">备份存储路径</div><div class="d">备份库与配对证书均保存在此目录（容器挂载卷）</div></div>
-          <div class="path-ipt" id="setPath">—</div></div>
-      </div>
-      <div class="card">
-        <b style="font-size:14.5px">定时计划</b>
+        <b style="font-size:14.5px">备份计划</b>
         <div class="set-row"><div><div class="k">每天自动备份</div><div class="d">到达设定时间时对所有在线设备触发</div></div>
           <div class="switch" id="swSched" onclick="toggleSwitch(this)"></div></div>
         <div class="set-row"><div><div class="k">备份时间</div><div class="d">每天到达该时刻，对所有在线设备触发一次备份</div></div>
@@ -577,23 +584,44 @@ td b{color:var(--txt);font-weight:600}
             <input type="time" id="timeInput" value="03:00" step="60" aria-label="每天自动备份时间">
           </div></div>
       </div>
+      <div class="card">
+        <b style="font-size:14.5px">通知</b>
+        <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">每次备份/恢复任务结束时 POST JSON，失败带具体原因</div></div>
+          <div class="path-ipt"><input id="whInput" placeholder="http://Bark:端口/DeviceKey" style="background:none;border:none;color:var(--green2);font-family:var(--mono);font-size:12.5px;width:100%;outline:none"></div></div>
+        <div class="set-row"><div><div class="k">通知范围</div><div class="d">成功也推，还是只在出问题时打扰你</div></div>
+          <div class="seg" id="notifyScope"><span data-v="all">全部结果</span><span data-v="failure">仅失败与取消</span></div></div>
+        <div class="set-row"><div><div class="k">测试通知</div><div class="d">用当前地址发一条测试消息，配没配对一点就知道</div></div>
+          <button class="btn" id="whTestBtn" onclick="testWebhook(this)" style="flex:none">发送测试</button></div>
+        <div style="padding-top:2px;font-size:11.5px;color:var(--txt3);line-height:1.85">
+          payload 字段：通用接收端收到 <span class="num">text</span> / <span class="num">title</span> / <span class="num">body</span> / <span class="num">group</span> / <span class="num">event</span> 等；
+          <span class="num">text</span> 也是纯文本摘要。企业微信 / 飞书 / 钉钉群机器人<strong>按地址自动匹配格式</strong>（Bark 地址填 http://Bark服务器:端口/DeviceKey）
+        </div>
+      </div>
     </div>
+
     <div>
       <div class="card" style="margin-bottom:16px">
-        <b style="font-size:14.5px">通知</b>
-        <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">每次备份/恢复任务结束时 POST JSON，失败带具体原因。Bark 直接填 http://Bark服务器:端口/DeviceKey（payload 已含 title/body）</div></div>
-          <div class="path-ipt"><input id="whInput" placeholder="https://…" style="background:none;border:none;color:var(--green2);font-family:var(--mono);font-size:12.5px;width:100%;outline:none"></div></div>
+        <b style="font-size:14.5px">存储</b>
+        <div class="set-row"><div><div class="k">备份存储路径</div><div class="d">Apple MobileSync 格式备份库（容器挂载卷，可在 compose 中调整）</div></div>
+          <div class="path-ipt" id="setPath">—</div></div>
+        <div class="set-row"><div><div class="k">数据目录</div><div class="d">数据库与配对证书（META_LOCATION，删除会丢失配对与备份记录）</div></div>
+          <div class="path-ipt" id="setMeta">—</div></div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <b style="font-size:14.5px">安全</b>
+        <div class="set-row" id="authRow" style="display:none"><div><div class="k">登录鉴权</div><div class="d" id="authDesc">已启用访问密码</div></div>
+          <button class="btn" onclick="doLogout()" style="flex:none">退出登录</button></div>
+        <div class="set-row" id="authHintRow" style="display:none"><div><div class="k">登录鉴权未启用</div><div class="d">局域网内任何人都可以访问和操作恢复。在 .env 里设置 IVAULT_PASSWORD 后执行 docker compose up -d 即可启用</div></div></div>
       </div>
       <div class="card">
         <b style="font-size:14.5px">关于</b>
         <div class="set-row"><div><div class="k">iVault</div><div class="d" id="aboutText">—</div></div></div>
         <div class="set-row"><div><div class="k">连接状态</div><div class="d" id="aboutOnline">—</div></div></div>
-        <div class="set-row" id="authRow" style="display:none"><div><div class="k">登录鉴权</div><div class="d">已启用访问密码（环境变量 IVAULT_PASSWORD），登录会话 30 天有效</div></div>
-          <button class="btn" onclick="doLogout()" style="flex:none">退出登录</button></div>
         <div class="set-row"><div><div class="k">诊断信息</div><div class="d">版本、系统、设备、最近告警 —— 出问题时一键复制，粘到 Issue 里就够定位</div></div>
           <button class="btn" onclick="copyDiagnostics(this)" style="flex:none">复制</button></div>
       </div>
     </div>
+
   </div>
 </section>
 

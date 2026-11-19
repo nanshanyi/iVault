@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, device, jobs, store
+from . import config, device, jobs, notify, store
 
 # config.normalize_log_level 已保证合法；这里再兜一层：basicConfig 在导入期执行，
 # 一旦抛异常就是「容器起来又立刻退出」的崩溃循环，不值得为一个日志开关冒险。
@@ -316,12 +316,14 @@ async def status():
         "version": VERSION,
         "os_name": detect_os_name(),
         "auth": bool(config.PASSWORD),
+        "session_days": config.SESSION_DAYS,
         "uptime_s": int(time.time() - _state["boot_at"]),
         "online_devices": _state["online_devices"],
         "transports": _state["transports"],
         "wifi_enabled": config.WIFI_ENABLED,
         "active_jobs": jobs.active_jobs(),
         "backup_dir": config.BACKUP_DIR,
+        "data_dir": config.DATA_DIR,
         "disk_free_bytes": disk_free,
     }
 
@@ -592,7 +594,7 @@ async def settings():
 
 @app.put("/api/settings")
 async def put_settings(body: dict):
-    allowed = {"schedule_enabled", "schedule_time", "notify_webhook"}
+    allowed = {"schedule_enabled", "schedule_time", "notify_webhook", "notify_scope"}
     # 校验并规范化：时间统一成 HH:MM。
     # 没有「保留份数」之类的设置：备份是单目录覆盖模式，磁盘上始终只有
     # 最新一次可恢复状态，历史记录就是任务台账，不回收也不需要配置。
@@ -601,10 +603,30 @@ async def put_settings(body: dict):
         if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
             raise HTTPException(400, "备份时间格式应为 HH:MM（00:00–23:59）")
         body["schedule_time"] = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
+    if "notify_scope" in body and str(body["notify_scope"]) not in ("all", "failure"):
+        raise HTTPException(400, "通知范围只支持 all（全部结果）或 failure（仅失败与取消）")
     for k, v in body.items():
         if k in allowed:
             store.set_setting(k, str(v))
     return {"ok": True, "settings": store.all_settings()}
+
+
+@app.post("/api/settings/test-webhook")
+async def test_webhook(body: dict | None = None):
+    """发一条测试通知。
+
+    请求体可带 {"url": "..."}：前端直接传输入框当前值，先测通再保存；
+    不带则测已保存的地址。成功与否都如实返回。
+    """
+    url = ((body or {}).get("url") or store.get_setting("notify_webhook") or "").strip()
+    if not url:
+        raise HTTPException(400, "请先填写 Webhook 地址")
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, notify.send_test, url)
+    except Exception as e:  # noqa: BLE001
+        log.warning("webhook 测试发送失败：%s", e)
+        return {"ok": False, "error": str(e) or repr(e)}
+    return {"ok": True}
 
 
 async def _scheduler_loop():

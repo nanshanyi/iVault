@@ -786,7 +786,8 @@ async function saveSettings() {
   const payload = {
     schedule_enabled: $('swSched').classList.contains('on') ? 'true' : 'false',
     schedule_time: $('timeInput').value || '03:00',
-    notify_webhook: $('whInput').value.trim()
+    notify_webhook: $('whInput').value.trim(),
+    notify_scope: document.querySelector('#notifyScope span.on')?.dataset.v || 'all'
   };
   try {
     await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -804,13 +805,42 @@ function renderSettings() {
   /* 每 6 秒的轮询刷新不要打断用户正在进行的输入 */
   if (document.activeElement !== $('timeInput')) $('timeInput').value = time;
   if (s.notify_webhook && document.activeElement !== $('whInput')) $('whInput').value = s.notify_webhook;
+  const scope = s.notify_scope === 'failure' ? 'failure' : 'all';
+  document.querySelectorAll('#notifyScope span').forEach(x => x.classList.toggle('on', x.dataset.v === scope));
   $('schedBadge').textContent = on ? '定时：每天 ' + time : '定时：已关闭';
-  const authRow = $('authRow');
-  if (authRow) authRow.style.display = state.status && state.status.auth ? 'flex' : 'none';
+  /* 安全卡片：已启用显示会话与退出入口；未启用给出启用方法 */
+  const auth = !!(state.status && state.status.auth);
+  const authRow = $('authRow'), authHint = $('authHintRow');
+  if (authRow) authRow.style.display = auth ? 'flex' : 'none';
+  if (authHint) authHint.style.display = auth ? 'none' : 'flex';
+  if (auth) $('authDesc').textContent = '已启用访问密码，登录会话 ' +
+    (state.status.session_days || 30) + ' 天有效；修改密码会使所有会话立即失效';
+  $('setMeta').textContent = state.status.data_dir || '—';
+}
+/* 测试通知：直接用输入框当前值发一条测试消息（先测通再保存也行），成功与否都如实反馈 */
+async function testWebhook(btn) {
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '发送中…';
+  try {
+    const r = await api('/api/settings/test-webhook', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: $('whInput').value.trim() })
+    });
+    if (r.ok) toast('测试通知已发送：查收手机 / 群机器人');
+    else toast('发送失败：' + (r.error || '未知原因'));
+  } catch (e) { toast('测试失败：' + e.message); }
+  btn.disabled = false; btn.textContent = old;
 }
 function wireSettings() {
   $('timeInput').addEventListener('change', saveSettings);
   $('whInput').addEventListener('change', saveSettings);
+  document.querySelectorAll('#notifyScope span').forEach(sp => {
+    sp.onclick = () => {
+      document.querySelectorAll('#notifyScope span').forEach(x => x.classList.remove('on'));
+      sp.classList.add('on');
+      saveSettings();
+    };
+  });
   syncTimeBox();
 }
 
