@@ -26,7 +26,16 @@ log = logging.getLogger("ivault.jobs")
 # 整轮只在换阶段时才补一个 \n。按行读取会把几分钟的进度憋成一条巨型字符串
 # （前端一次性插入几 MB HTML 会直接卡死浏览器，超长行还会让 readline 抛
 # ValueError 把任务拽出循环）。所以这里按 \r 和 \n 一起切分。
-PROGRESS_RE = re.compile(r"(\d{1,3})(?:\.\d+)?%")
+#
+# 输出里同时有两种百分比，必须区分：
+#   Backup     [.....................]   3%                          ← 整机进度
+#              [============>        ]  50.9%   13.1 MB / 25.6 MB   ← 单个文件进度
+# 取「最后一个百分比」会拿到文件进度，第一个文件传完就把整机进度顶到 100%。
+OVERALL_RE = re.compile(r"Backup\s*\[[^\]]*\]\s*(\d{1,3})\s*%")
+TOTAL_RE = re.compile(r"Total progress:\s*(\d{1,3})")
+FILE_PROG_RE = re.compile(r"\d{1,3}(?:\.\d+)?%\s+[\d.]+\s*[KMGT]i?B\s*/")
+# 终端控制序列（清屏、光标上移等）：落库和前端都不该看到这些乱码
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
 
 # 单行上限：进度条很密时不必完整保留，截断即可（日志是给人看的）。
 LINE_MAX = 400
@@ -105,26 +114,32 @@ class Job:
         self.broadcast({"type": "log", "line": line})
 
     def _emit(self, seg: str):
-        """处理子进程输出的一段：带百分比的当进度，其余原样进日志。
+        """处理子进程输出的一段：整机进度单独识别，其余进日志。
 
         idevicebackup2 的进度条一秒钟能刷几十次，原样转发会把 SSE 和前端
         压垮，所以进度事件按 PROGRESS_MIN_INTERVAL 节流，日志每两秒留一条。
         """
-        line = seg.strip()
+        line = ANSI_RE.sub("", seg).strip()
         if not line:
             return
         if len(line) > LINE_MAX:
             line = line[:LINE_MAX] + " …"
         now = time.time()
-        pcts = PROGRESS_RE.findall(line)
-        if pcts:
+
+        # 整机进度：只认 `Backup [....] 3%` 这种标记，没有就退到 "Total progress:"
+        m = OVERALL_RE.search(line)
+        if not m:
+            m = TOTAL_RE.search(line)
+        if m:
             try:
-                pct = int(pcts[-1])
+                pct = int(m.group(1))
             except ValueError:
                 pct = None
             if pct is not None:
-                # 进度只增不减：多段输出混排时不会来回跳
-                self.progress = max(self.progress, min(100, pct))
+                # 只增不减：分段输出混排时数字不会来回跳。
+                # 上限压到 99%：idevicebackup2 在收尾（包括中途放弃）时会先打一行
+                # 100%，只有真正成功才由 _finish 置 100，避免失败的任务显示成满格。
+                self.progress = max(self.progress, min(99, pct))
                 self.phase = "正在传输数据"
                 if now - self._last_prog_ts >= PROGRESS_MIN_INTERVAL:
                     self._last_prog_ts = now
@@ -134,6 +149,14 @@ class Job:
                     self._last_prog_log_ts = now
                     self.add_log(line)
                 return
+
+        # 单个文件的进度条：不参与整机进度，日志里隔两秒留一条做活动迹象
+        if FILE_PROG_RE.search(line) or "]" in line and "%" in line:
+            if now - self._last_prog_log_ts >= PROGRESS_LOG_INTERVAL:
+                self._last_prog_log_ts = now
+                self.add_log(line)
+            return
+
         self.add_log(line)
 
     def _log_text(self, header: str = "") -> str:
