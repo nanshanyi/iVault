@@ -528,11 +528,29 @@ async def _notify(text: str):
 # ---------------- 前端静态托管 ----------------
 
 import os as _os
+
+
+class NoCacheStatic(StaticFiles):
+    """静态资源一律要求回源校验。
+
+    Starlette 默认只发 ETag/Last-Modified，浏览器会按启发式规则强缓存
+    index.html / app.js，于是升级镜像后页面还跑着旧 JS，接口一改就报
+    「服务连接中断」，普通刷新（F5）也不生效，非得手动清缓存。
+    no-cache 不是不缓存：每次都带 If-None-Match 回源，没变就 304，
+    带宽开销几乎为零，但升级后第一次访问必定拿到新文件。
+    """
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
+
+
 _static_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "frontend")
 if not _os.path.isdir(_static_dir):
     _static_dir = None
 if _static_dir:
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="ui")
+    app.mount("/", NoCacheStatic(directory=_static_dir, html=True), name="ui")
 else:
     @app.get("/")
     async def no_ui():
