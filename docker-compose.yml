@@ -37,6 +37,7 @@ services:
       - IVAULT_PASSWORD=${IVAULT_PASSWORD:-}
       # 备份前磁盘剩余空间下限（GB），低于该值拒绝开始备份；0 关闭检查
       - IVAULT_MIN_FREE_GB=${IVAULT_MIN_FREE_GB:-2}
+      - IVAULT_MIN_BATTERY=${IVAULT_MIN_BATTERY:-20}
     volumes:
       # USB 总线：用 bind mount 才能实时看到插拔产生的设备节点（见上方说明）
       - /dev/bus/usb:/dev/bus/usb

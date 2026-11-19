@@ -60,6 +60,15 @@ except ValueError:
     MIN_FREE_GB = 2.0
 MIN_FREE_BYTES = max(0, int(MIN_FREE_GB * 1024 ** 3))
 
+# 备份前的最低电量（%）：低于该值且没有接电源时拒绝开始。
+# 走到一半电量耗尽是「唯一一份备份停在中间态」的常见原因，而插上线就边充边备，
+# 所以这条检查只在无线备份时真正起作用。设为 0 关闭检查。
+try:
+    MIN_BATTERY = int(os.environ.get("IVAULT_MIN_BATTERY", "20"))
+except ValueError:
+    MIN_BATTERY = 20
+MIN_BATTERY = max(0, min(100, MIN_BATTERY))
+
 # 无线（Wi-Fi）备份：由 entrypoint 在 netmuxd 成功启动后置为 1，
 # 前端据此显示「无线通道已就绪」而不是让用户猜。
 WIFI_ENABLED = os.environ.get("IVAULT_WIFI", "0") in ("1", "true", "yes", "on")

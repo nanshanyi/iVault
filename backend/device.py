@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import re
+import time
 from pathlib import Path
 
 from . import config
@@ -127,6 +128,50 @@ async def device_info(udid: str) -> dict:
                 if m:
                     info.setdefault(m.group(1).strip(), m.group(2).strip())
     return info
+
+
+_battery_cache: dict[str, tuple[float, dict]] = {}
+
+
+async def battery_info(udid: str, ttl: float = 15.0) -> dict | None:
+    """读取电量与充电状态（com.apple.mobile.battery）。
+
+    返回 {"level": 0–100, "charging": bool, "external": bool, "full": bool}；
+    取不到（设备忙、离线、字段缺失）就返回 None——电量只是提示信息，
+    不能因为查不到就挡住页面或任务。
+
+    带 TTL 缓存：页面每 6 秒轮询一次，每次都 spawn 一个 ideviceinfo 太重，
+    无线设备尤其慢。
+    """
+    now = time.time()
+    hit = _battery_cache.get(udid)
+    if hit and now - hit[0] < ttl:
+        return hit[1] or None
+
+    code, out = await _run(
+        [config.BIN_IDEVICE_INFO, *net_args(udid), "-u", udid, "-q", "com.apple.mobile.battery"],
+        timeout=6,
+    )
+    info: dict[str, str] = {}
+    if code == 0:
+        for ln in out.splitlines():
+            m = re.match(r"^([^:]+):\s*(.+)$", ln.strip())
+            if m:
+                info[m.group(1).strip()] = m.group(2).strip()
+
+    data = None
+    try:
+        level = int(info["BatteryCurrentCapacity"])
+        data = {
+            "level": max(0, min(100, level)),
+            "charging": info.get("BatteryIsCharging", "").lower() == "true",
+            "external": info.get("ExternalConnected", "").lower() == "true",
+            "full": info.get("FullyCharged", "").lower() == "true",
+        }
+    except (KeyError, ValueError):
+        data = None
+    _battery_cache[udid] = (now, data or {})
+    return data
 
 
 async def is_paired(udid: str) -> bool:

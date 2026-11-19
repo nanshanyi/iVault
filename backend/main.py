@@ -352,6 +352,8 @@ async def devices():
         # size_bytes 都是整个备份目录的大小（增量也写同一目录），
         # 按条数求和会把同一份数据成倍虚高（60GB 手机备份 5 次显示 300GB）。
         d["total_bytes"] = completed[0]["size_bytes"] if completed else 0
+        # 电量：只对在线设备查（离线查必然超时），带 15 秒缓存，查不到就不给字段
+        d["battery"] = await device.battery_info(d["udid"]) if d["online"] else None
         out.append(d)
     return out
 
@@ -416,6 +418,22 @@ async def pair_events(sid: str):
 
 # ---------------- 备份 ----------------
 
+async def _battery_block_reason(udid: str) -> str | None:
+    """电量过低且未接电源时返回拒绝原因，否则 None。
+
+    取不到电量时一律放行：这条检查是「避免备份跑到一半没电」，不是安全边界，
+    不能因为查询失败（设备忙、字段缺失）就把正常备份挡在门外。
+    接着电源（USB 线或有线充电）时也不拦——插着线本来就在充电。
+    """
+    if config.MIN_BATTERY <= 0:
+        return None
+    b = await device.battery_info(udid, ttl=5)
+    if not b or b["level"] >= config.MIN_BATTERY or b["charging"] or b["external"]:
+        return None
+    return (f"电量仅 {b['level']}%，低于 {config.MIN_BATTERY}% 且未在充电。"
+            "请先充电，或插上数据线备份（插线会边充边备）")
+
+
 @app.post("/api/backups")
 async def trigger_backup(body: dict):
     udid = body.get("udid")
@@ -429,6 +447,9 @@ async def trigger_backup(body: dict):
         log.warning("触发前刷新设备失败：%s", e)
     if udid not in _state["online_devices"]:
         raise HTTPException(409, "设备当前不在线（需插线，或确保 Wi-Fi 可达且已开启同步）")
+    reason = await _battery_block_reason(udid)
+    if reason:
+        raise HTTPException(409, reason)
     # 设备互斥由 jobs 层统一裁决：HTTP 与定时调度器走的是同一条路，
     # 检查与登记在同一个事件循环 tick 内完成，不会出现两个请求都通过的情况。
     try:
@@ -643,6 +664,12 @@ async def _scheduler_loop():
                     store.set_setting("_last_run", today)
                     for d in store.list_devices():
                         if d["udid"] not in _state["online_devices"]:
+                            continue
+                        # 电量过低且没接电源：跳过这一次（不写失败记录）。
+                        # 定时任务没人盯着，跑到一半没电最容易留下半截备份。
+                        reason = await _battery_block_reason(d["udid"])
+                        if reason:
+                            log.warning("定时备份跳过 %s：%s", d["udid"], reason)
                             continue
                         # 手动备份 / 恢复正在跑时，定时任务让路：
                         # 以前这里直接调 start_backup，绕过端点的占用检查，

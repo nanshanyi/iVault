@@ -347,6 +347,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .chip-run i{width:5px;height:5px;border-radius:50%;background:var(--green);
   animation:dpPulse 1.4s ease-in-out infinite}
 @keyframes dpPulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* ===== 电量 ===== */
+.batt{display:inline-flex;align-items:center;gap:5px;flex:none;
+  font-family:var(--mono);font-size:11.5px;color:var(--txt2);letter-spacing:.2px}
+.batt svg{width:22px;height:22px;flex:none}
+.batt .bolt{width:9px;height:9px;margin-right:-2px}
+.batt.low{color:var(--amber)}      /* 低于阈值且未充电：琥珀色提醒 */
+.batt.chg{color:var(--green2)}     /* 充电中 */
 .term::-webkit-scrollbar{width:6px} .term::-webkit-scrollbar-thumb{background:var(--stroke2);border-radius:99px}
 .bar{height:6px;border-radius:99px;background:var(--track);overflow:hidden}
 .bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#00a866,#00e59b);

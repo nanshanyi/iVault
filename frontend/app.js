@@ -184,6 +184,25 @@ function clearLog() {
   if (term) term.innerHTML = '';
 }
 
+/* 电量徽标：图标按百分比填充，充电中显示闪电并转绿，低电量未充电转琥珀色。
+   取不到电量（离线 / 设备忙）就不渲染，不占位、不显示「—」。 */
+function battChip(b) {
+  if (!b || b.level == null) return '';
+  const level = Math.max(0, Math.min(100, b.level));
+  const chg = !!(b.charging || b.external);
+  const low = level < 20 && !chg;
+  const w = Math.max(1.6, 14.2 * level / 100).toFixed(1);
+  const bolt = chg ? '<svg class="bolt" viewBox="0 0 24 24" fill="currentColor">' +
+    '<path d="M13.5 2 5 14h6l-1 8 9-12h-6l.5-8z"/></svg>' : '';
+  return '<span class="batt ' + (chg ? 'chg' : low ? 'low' : '') + '" title="' +
+    (chg ? '充电中 · ' : '') + level + '%">' + bolt +
+    '<svg viewBox="0 0 24 24" fill="none">' +
+      '<rect x="2" y="7" width="18" height="10" rx="2.6" stroke="currentColor" stroke-width="1.4"/>' +
+      '<path d="M21.6 10.4v3.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<rect x="4" y="9" width="' + w + '" height="6" rx="1.2" fill="currentColor"/>' +
+    '</svg><span>' + level + '%</span></span>';
+}
+
 /* 进度更新：设备管理页的卡片进度带 + 总览「我的设备」的细进度条与徽标，
    两处都由 SSE 直接驱动，不必等 6 秒轮询；找不到元素就安静跳过。 */
 function updateDeviceProgress(udid, pct, phase, elapsed) {
@@ -312,6 +331,7 @@ function renderDashboard() {
                    '<i style="width:' + pct + '%"></i></div>' +
                    '<b class="dp-pct" id="dpc-' + esc(d.udid) + '">' + pct + '%</b></div>' : '') +
         '</div>' +
+        battChip(d.battery) +
         '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' +
           (conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线') + '</span>' +
         '</div>');
@@ -354,6 +374,8 @@ function renderDevices() {
         '</div>' +
         '<div style="padding:0 20px 20px;font-size:12.5px;color:var(--txt2);line-height:2.15">' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">连接方式</span><span>' + (CONN_LABEL[conn] || '未连接') + '</span></div>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--txt3)">电量</span>' +
+            (d.battery ? battChip(d.battery) : '<span style="color:var(--txt3)">未取到</span>') + '</div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">UDID</span><span class="num">···' + esc(d.udid.slice(-12)) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">配对时间</span><span>' + fmtTs(d.paired_at) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +

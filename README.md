@@ -74,6 +74,7 @@ docker compose pull && docker compose up -d --no-build
 | Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
 | 访问密码 | `IVAULT_PASSWORD` 启用登录鉴权，HttpOnly Cookie 会话，SSE 同套保护 |
 | Webhook 通知 | 每次任务结束推送，失败带原因。Bark 填 `http://Bark服务器:端口/DeviceKey`；企业微信 / 飞书 / 钉钉群机器人按地址自动匹配格式；响应体业务码非 0 视为失败（测试不假成功） |
+| 设备状态 | 卡片显示电量与充电状态，低于阈值且未接电源时拒绝开始备份 |
 | 失败早发现 | 备份前检查磁盘剩余空间，低于阈值拒绝开始 |
 | 深浅色主题 | 跟随系统 / 手动切换 / 记忆选择 |
 
@@ -156,6 +157,7 @@ scripts/
 | `IVAULT_PASSWORD` | 空 | **强烈建议设置**：Web 访问密码，启用后所有接口需登录（见下方「安全」） |
 | `IVAULT_SESSION_DAYS` | `30` | 登录会话有效期（天），1–365，非法值自动回落为 30 |
 | `IVAULT_MIN_FREE_GB` | `2` | 备份前磁盘剩余空间下限（GB），低于则拒绝开始备份；`0` 关闭检查 |
+| `IVAULT_MIN_BATTERY` | `20` | 备份前最低电量（%），低于此值且未接电源时拒绝开始；插线边充边备不受影响，`0` 关闭检查 |
 | `IVAULT_WIFI` | `1` | `0` 关闭无线通道，只走 USB |
 | `IVAULT_USB_WATCHDOG` | `1` | `0` 关闭 USB 热插拔看护（关闭后容器运行中插线不识别，需重启容器） |
 | `IVAULT_OS_NAME` | 空 | 界面左下角显示的系统名，如 `DSM 7.2`；留空则自动探测，探测不到就隐藏 |
