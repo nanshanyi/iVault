@@ -32,6 +32,11 @@ services:
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
       # 1=启用无线通道（netmuxd，默认）；0=纯 USB。
       - IVAULT_WIFI=${IVAULT_WIFI:-1}
+      # Web 访问密码：强烈建议设置（见 README「安全」）。留空 = 不启用鉴权。
+      # 设置后所有 /api/*（含 SSE 实时推送）都需要登录，登录会话 30 天有效。
+      - IVAULT_PASSWORD=${IVAULT_PASSWORD:-}
+      # 备份前磁盘剩余空间下限（GB），低于该值拒绝开始备份；0 关闭检查
+      - IVAULT_MIN_FREE_GB=${IVAULT_MIN_FREE_GB:-2}
     volumes:
       # USB 总线：用 bind mount 才能实时看到插拔产生的设备节点（见上方说明）
       - /dev/bus/usb:/dev/bus/usb

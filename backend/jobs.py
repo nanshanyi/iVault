@@ -18,7 +18,7 @@ import os
 import re
 import time
 
-from . import config, device, store
+from . import config, device, notify, store
 
 log = logging.getLogger("ivault.jobs")
 
@@ -141,6 +141,18 @@ class Job:
                 q.put_nowait({"type": "end"})  # 终止哨兵
             except Exception:
                 pass
+        # Webhook 在这里发而不是定时调度器里：用户要的是「这次任务的结果」，
+        # 失败与取消也必须送到，而不是只有触发时的一条已开跑通知。
+        try:
+            notify.task_finished(
+                self.kind, status, self.udid,
+                snapshot_id=self.snap_id,
+                error=extra.get("error", ""),
+                size_bytes=extra.get("size"),
+                duration_s=time.time() - self.started_at,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("任务 %s webhook 通知失败：%s", self.id, e)
 
     async def _kill_proc(self, grace: float = 5.0):
         """确保子进程退出。可重入：进程已退出或压根没起来时直接返回。"""
@@ -237,16 +249,30 @@ class Job:
         store.get_device(self.udid)           # 设备记录不存在时尽早暴露，别等进程报错
         snap_dir = os.path.join(config.BACKUP_DIR, self.udid)
         os.makedirs(snap_dir, exist_ok=True)
-        prior = store.list_snapshots(self.udid, limit=1)
-        snap_type = "INCREMENTAL" if prior and any(
+        # 增量与否的判断依据是「磁盘上是否已有成功完成的备份基线」，
+        # 不是最近一条记录——上一轮失败后基线目录仍在，这轮实际跑的还是增量。
+        # 只看最近 1 条会把「失败后的正常增量」误标成 FULL，界面因此说谎。
+        prior = store.list_snapshots(self.udid, limit=50)
+        snap_type = "INCREMENTAL" if any(
             s["status"] == "COMPLETE" for s in prior
         ) else "FULL"
 
         self.snap_id = store.create_snapshot(self.udid, snap_type=snap_type)
-        store.touch_last_backup(self.udid)
         if self._cancel_requested:
             self._close_snapshot("CANCELED", error="启动前已取消")
             self._finish("CANCELED")
+            return
+
+        # 备份盘写满的后果不只是这次失败：唯一那份可恢复状态会停在中间态，
+        # 且没有上一个版本可退回。低于安全下限直接拒绝，让失败发生在最开始。
+        free = _disk_free_bytes(config.BACKUP_DIR)
+        if config.MIN_FREE_BYTES > 0 and free >= 0 and free < config.MIN_FREE_BYTES:
+            err = (f"备份盘剩余空间不足：仅剩 {free / 1024 ** 3:.1f} GB，"
+                   f"低于安全下限 {config.MIN_FREE_GB:g} GB。"
+                   "请清理备份盘，或在 .env 里调低 IVAULT_MIN_FREE_GB")
+            self.add_log(err)
+            self._close_snapshot("FAILED", error=err)
+            self._finish("FAILED", error=err)
             return
 
         rc = await self._pump([
@@ -259,6 +285,9 @@ class Job:
             self._finish("CANCELED")
             return
         if rc == 0:
+            # last_backup_at 只在真正成功时更新：失败的任务不能让设备卡片
+            # 显示「今天已备份」——那是健康状态里最容易被误读的字段。
+            store.touch_last_backup(self.udid)
             size = await _dir_size(snap_dir)
             self._close_snapshot("COMPLETE", size_bytes=size, snap_type=snap_type)
             self._finish("DONE", progress=100, size=size, snapshot=self.snap_id)
@@ -276,6 +305,15 @@ class Job:
         self._cancel_requested = True
         self.status = "CANCELED"
         await self._kill_proc()
+
+
+def _disk_free_bytes(path: str) -> int:
+    """备份盘剩余字节数；拿不到时返回 -1（跳过检查，不因为 stat 失败拦备份）。"""
+    try:
+        import shutil
+        return shutil.disk_usage(path).free
+    except OSError:
+        return -1
 
 
 async def _dir_size(path: str) -> int:
@@ -384,7 +422,21 @@ async def _run_restore_inner(job: "Job"):
     elif rc == 0:
         job._finish("DONE", progress=100)
     else:
-        job._finish("FAILED", error=f"restore 退出码 {rc}")
+        err = f"restore 退出码 {rc}"
+        # 「查找我的 iPhone」是恢复最常见的失败原因，但 idevicebackup2.c 里
+        # 并没有 "Find My" 字样，能否命中取决于设备返回的错误描述，属尽力识别。
+        # 设备端错误统一带 MBErrorDomain 前缀，但该域覆盖所有备份域错误，
+        # 只能作为软提示；具体哪个错误码对应未关「查找」，需在真机上
+        # 开着「查找」实测一次恢复，从日志确认后再收紧判断。
+        tail = "\n".join(job.log_tail[-40:])
+        if re.search(r"find\s*my|查找", tail, re.I):
+            err += ("：检测到「查找我的 iPhone」相关报错。"
+                    "请先在手机上关闭「查找」（设置 → Apple 账户 → 查找），恢复完成后再打开，然后重试")
+        elif re.search(r"MBErrorDomain", tail):
+            err += ("：设备端返回了备份域错误（MBErrorDomain）。"
+                    "常见原因是未关闭「查找我的 iPhone」，请先关闭再重试；"
+                    "若仍失败，可查看本条记录日志中的完整设备报错")
+        job._finish("FAILED", error=err)
 
 
 def cleanup_retention():

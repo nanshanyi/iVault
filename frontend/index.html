@@ -375,6 +375,11 @@ td b{color:var(--txt);font-weight:600}
 .range-val{min-width:44px;text-align:right;font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green2)}
 .range-ticks{display:flex;justify-content:space-between;font-size:10.5px;color:var(--txt3);margin-top:8px;padding-right:57px}
 
+/* ===== 登录 ===== */
+.auth-input{width:260px;background:var(--input-bg);border:1px solid var(--stroke);border-radius:10px;
+  padding:10px 14px;color:var(--txt);font-size:14px;outline:none;text-align:center;letter-spacing:.5px}
+.auth-input:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--green-dim)}
+
 /* ===== toast ===== */
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;
   background:var(--toast-bg);border:1px solid rgba(0,196,127,.4);color:var(--green2);
@@ -555,11 +560,12 @@ td b{color:var(--txt);font-weight:600}
   </div>
   <div class="card" style="padding:0">
     <table>
-      <thead><tr><th>快照</th><th>设备</th><th>类型</th><th>大小</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+      <thead><tr><th>记录</th><th>设备</th><th>类型</th><th>大小</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
       <tbody id="snapBody"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
     </table>
-    <div style="padding:14px 20px;font-size:12px;color:var(--txt3);border-top:1px solid var(--stroke)">
-      增量快照共享基线数据目录；删除记录不会立即释放磁盘空间，空间由定时任务中的保留策略统一回收
+    <div style="padding:14px 20px;font-size:12px;color:var(--txt3);border-top:1px solid var(--stroke);line-height:1.8">
+      磁盘上目前只保留<strong style="color:var(--txt2)">最新一次可恢复状态</strong>（idevicebackup2 持续更新同一目录）；
+      这里的记录是时间点标记，删除记录不会释放磁盘空间，磁盘上的多时间点版本计划在后续版本支持
     </div>
   </div>
 </section>
@@ -573,10 +579,10 @@ td b{color:var(--txt);font-weight:600}
         <b style="font-size:14.5px">存储与保留</b>
         <div class="set-row"><div><div class="k">备份存储路径</div><div class="d">备份库与配对证书均保存在此目录（容器挂载卷）</div></div>
           <div class="path-ipt" id="setPath">—</div></div>
-        <div class="set-row"><div><div class="k">保留快照数</div><div class="d">每台设备最多保留的历史记录数，超出的最旧记录由定时任务回收</div></div>
+        <div class="set-row"><div><div class="k">保留记录数</div><div class="d">每台设备最多保留的记录条数，超出的最旧记录由定时任务回收。<br>注意：目前磁盘上只有最新一次可恢复备份，保留数仅作用于记录条目</div></div>
           <div class="range-wrap">
             <div class="range-line">
-              <input type="range" class="range" id="retRange" min="1" max="10" step="1" value="5" aria-label="保留快照数">
+              <input type="range" class="range" id="retRange" min="1" max="10" step="1" value="5" aria-label="保留记录数">
               <span class="range-val" id="retVal">5 份</span>
             </div>
             <div class="range-ticks"><span>1 份 · 精简</span><span>10 份 · 完整</span></div>
@@ -596,13 +602,15 @@ td b{color:var(--txt);font-weight:600}
     <div>
       <div class="card" style="margin-bottom:16px">
         <b style="font-size:14.5px">通知</b>
-        <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">定时任务触发时 POST JSON（Bark / 企业微信机器人等）</div></div>
+        <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">每次备份/恢复任务结束时 POST JSON（Bark / 企业微信机器人等），失败带具体原因</div></div>
           <div class="path-ipt"><input id="whInput" placeholder="https://…" style="background:none;border:none;color:var(--green2);font-family:var(--mono);font-size:12.5px;width:100%;outline:none"></div></div>
       </div>
       <div class="card">
         <b style="font-size:14.5px">关于</b>
         <div class="set-row"><div><div class="k">iVault</div><div class="d" id="aboutText">—</div></div></div>
         <div class="set-row"><div><div class="k">连接状态</div><div class="d" id="aboutOnline">—</div></div></div>
+        <div class="set-row" id="authRow" style="display:none"><div><div class="k">登录鉴权</div><div class="d">已启用访问密码（环境变量 IVAULT_PASSWORD），登录会话 30 天有效</div></div>
+          <button class="btn" onclick="doLogout()" style="flex:none">退出登录</button></div>
         <div class="set-row"><div><div class="k">诊断信息</div><div class="d">版本、系统、设备、最近告警 —— 出问题时一键复制，粘到 Issue 里就够定位</div></div>
           <button class="btn" onclick="copyDiagnostics(this)" style="flex:none">复制</button></div>
       </div>
@@ -648,6 +656,21 @@ td b{color:var(--txt);font-weight:600}
     <button class="wiz-close" onclick="closeLog()" title="关闭（Esc）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
+  </div>
+</div>
+<!-- 登录浮层：启用 IVAULT_PASSWORD 后，任一接口返回 401 时出现 -->
+<div class="wiz-overlay" id="authOverlay" style="display:none;z-index:90">
+  <div class="card wizard" role="dialog" aria-modal="true" aria-label="登录" style="max-width:400px">
+    <div class="wiz-body" style="min-height:0">
+      <div class="big-ico"><svg viewBox="0 0 24 24" fill="none" stroke="#00e59b" stroke-width="1.7">
+        <rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 017 0v2.5"/><path d="M12 14.5v2"/></svg></div>
+      <h3>iVault 需要登录</h3>
+      <p>已启用访问密码（环境变量 IVAULT_PASSWORD）</p>
+      <input type="password" id="authPass" class="auth-input" placeholder="访问密码" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')doLogin()">
+      <p id="authErr" style="color:var(--red);font-size:12.5px;display:none;margin-top:-4px"></p>
+    </div>
+    <div class="wiz-actions"><button class="btn primary" id="authBtn" onclick="doLogin()">登录</button></div>
   </div>
 </div>
 <div class="toast" id="toast"></div>

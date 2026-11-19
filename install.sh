@@ -36,6 +36,10 @@ read -r -p "Web 端口（默认 8666）: " IVAULT_PORT
 IVAULT_PORT="${IVAULT_PORT:-8666}"
 read -r -p "界面左下角显示的系统名（可留空，如 DSM 7.2 / UGOS 1.21 / QTS 5.1）: " IVAULT_OS_NAME
 IVAULT_OS_NAME="${IVAULT_OS_NAME:-}"
+echo "  恢复功能会覆盖设备数据，且服务以 privileged + host 网络运行，"
+read -r -s -p "  强烈建议设置 Web 访问密码（留空 = 不启用鉴权）: " IVAULT_PASSWORD
+echo ""
+IVAULT_PASSWORD="${IVAULT_PASSWORD:-}"
 
 mkdir -p "$BACKUP_LOCATION" "$META_LOCATION" "$META_LOCATION/lockdown" || {
     echo "✗ 无法创建目录，请确认路径有效且当前用户有写权限"; exit 1
@@ -46,7 +50,8 @@ BACKUP_LOCATION=${BACKUP_LOCATION}
 META_LOCATION=${META_LOCATION}
 IVAULT_PORT=${IVAULT_PORT}
 IVAULT_OS_NAME=${IVAULT_OS_NAME}
-# latest = 跟随最新发布；也可固定成某个版本，例如 v0.2.0
+IVAULT_PASSWORD=${IVAULT_PASSWORD}
+# latest = 跟随最新发布；也可固定成某个版本，例如 v0.4.0
 IVAULT_TAG=latest
 EOF
 echo "✓ 已写入 .env"

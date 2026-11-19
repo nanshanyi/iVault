@@ -36,6 +36,28 @@ def normalize_log_level(value: str | None, default: str = "INFO") -> str:
 
 LOG_LEVEL = normalize_log_level(os.environ.get("IVAULT_LOG"), "INFO")
 
+# Web 访问密码：留空 = 不启用鉴权（保持旧行为）。设置后所有 /api/*（含 SSE）
+# 都需要登录；服务以 privileged + host 网络运行、且能写设备数据，
+# 局域网内裸奔的风险与一个环境变量的成本完全不成比例，所以文档里强烈建议设置。
+PASSWORD = os.environ.get("IVAULT_PASSWORD", "").strip()
+# 登录会话有效期（天），Cookie 的 max_age 与签发时效共用该值。
+# 与 normalize_log_level 同理：它在模块导入期执行，一个非法值不能让容器
+# 变成无限重启；钳制到 1–365，认不出就回默认 30。
+try:
+    SESSION_DAYS = int(os.environ.get("IVAULT_SESSION_DAYS", "30") or "30")
+except ValueError:
+    SESSION_DAYS = 30
+SESSION_DAYS = max(1, min(365, SESSION_DAYS))
+
+# 备份开始前的磁盘剩余空间下限（GB）：备份盘被写满的代价是「唯一那份可恢复
+# 状态损坏，且没有上一个版本可退回」。低于下限直接拒绝开始，宁可失败得早。
+# 设为 0 关闭检查。
+try:
+    MIN_FREE_GB = float(os.environ.get("IVAULT_MIN_FREE_GB", "2"))
+except ValueError:
+    MIN_FREE_GB = 2.0
+MIN_FREE_BYTES = max(0, int(MIN_FREE_GB * 1024 ** 3))
+
 # 无线（Wi-Fi）备份：由 entrypoint 在 netmuxd 成功启动后置为 1，
 # 前端据此显示「无线通道已就绪」而不是让用户猜。
 WIFI_ENABLED = os.environ.get("IVAULT_WIFI", "0") in ("1", "true", "yes", "on")

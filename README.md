@@ -42,7 +42,7 @@ git clone https://github.com/nanshanyi/iVault.git && cd iVault
 chmod +x install.sh && ./install.sh
 ```
 
-脚本会问你备份目录、元数据目录和端口，然后**直接拉取预构建镜像启动**（`docker compose pull` + `up -d --no-build`），通常几十秒完成，不需要编译。
+脚本会问你备份目录、元数据目录、端口和 Web 访问密码（强烈建议设置），然后**直接拉取预构建镜像启动**（`docker compose pull` + `up -d --no-build`），通常几十秒完成，不需要编译。
 
 浏览器打开 `http://<NAS-IP>:8666` → 用数据线把 iPhone 插到 **NAS 机身**的 USB 口（不是电脑）→ 设备管理 → 添加设备 → 手机上点「信任」→ 立即备份。
 
@@ -69,11 +69,12 @@ docker compose pull && docker compose up -d --no-build
 | USB 首次配对 | 信任授权 + 证书持久化，重装容器不用重配 |
 | 全量 / 增量整机备份 | Apple MobileSync 格式，目录可直接拷到 Mac 用 Finder 恢复 |
 | 实时进度 | SSE 推送进度环、速率与终端日志，断线重连不丢状态 |
-| 快照管理 | 列表、删除记录、恢复到设备 |
+| 备份记录 | 列表、删除记录、恢复到设备；每条记录可回看完整任务日志 |
 | 定时备份 | 每天自选时刻，服务端调度 |
-| 保留策略 | 1–10 份，滑杆调节 |
+| 保留策略 | 1–10 条，滑杆调节（当前仅作用于记录，见「已知限制」） |
 | Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
-| Webhook 通知 | 定时任务触发时 POST JSON |
+| 访问密码 | `IVAULT_PASSWORD` 启用登录鉴权，HttpOnly Cookie 会话，SSE 同套保护 |
+| 失败早发现 | Webhook 在每次任务结束时推送结果（失败带原因）；备份前检查磁盘剩余空间 |
 | 深浅色主题 | 跟随系统 / 手动切换 / 记忆选择 |
 
 ## 无线备份
@@ -151,7 +152,10 @@ scripts/
 | `BACKUP_LOCATION` | *必填* | 备份库在宿主机上的绝对路径 |
 | `META_LOCATION` | `./data` | SQLite 与配对证书目录，**必须持久化** |
 | `IVAULT_PORT` | `8666` | Web 端口 |
-| `IVAULT_TAG` | `latest` | 镜像版本，可固定为 `v0.2.0` |
+| `IVAULT_TAG` | `latest` | 镜像版本，可固定为 `v0.4.0` |
+| `IVAULT_PASSWORD` | 空 | **强烈建议设置**：Web 访问密码，启用后所有接口需登录（见下方「安全」） |
+| `IVAULT_SESSION_DAYS` | `30` | 登录会话有效期（天），1–365，非法值自动回落为 30 |
+| `IVAULT_MIN_FREE_GB` | `2` | 备份前磁盘剩余空间下限（GB），低于则拒绝开始备份；`0` 关闭检查 |
 | `IVAULT_WIFI` | `1` | `0` 关闭无线通道，只走 USB |
 | `IVAULT_USB_WATCHDOG` | `1` | `0` 关闭 USB 热插拔看护（关闭后容器运行中插线不识别，需重启容器） |
 | `IVAULT_OS_NAME` | 空 | 界面左下角显示的系统名，如 `DSM 7.2`；留空则自动探测，探测不到就隐藏 |
@@ -160,23 +164,43 @@ scripts/
 
 界面左下角默认只显示服务状态与版本号，不猜系统名。想让它是「DSM 7.2」或「UGOS 1.21」，填 `IVAULT_OS_NAME` 最稳；也可以取消 `docker-compose.yml` 里 `/etc/os-release:/host-os-release:ro` 那行的注释。容器内的 `/etc/os-release` 是镜像自带的 Debian 信息，后端刻意不读——否则界面上会写着「Debian 13」而你的设备其实是群晖。
 
+## 安全
+
+iVault 能**写设备数据**（恢复会覆盖整机数据），Web 默认监听在局域网可达的 `0.0.0.0:8666`，而容器又是 `privileged` + host 网络。**强烈建议设置访问密码**：
+
+```bash
+# .env 里加一行（或在 install.sh 交互时直接填）
+IVAULT_PASSWORD=你的密码
+docker compose up -d     # 重启生效
+```
+
+- 启用后所有 `/api/*` 接口（含 SSE 实时推送）都需要登录，未登录访问返回 401，页面自动弹出登录浮层
+- 登录态以 HttpOnly Cookie（`SameSite=Lax`）下发，默认 30 天有效（`IVAULT_SESSION_DAYS`，1–365）
+- **退出登录只清除浏览器里的 Cookie**：令牌在有效期内本身仍然有效，被复制走的 Cookie 可继续使用。要让所有会话立即失效，修改 `IVAULT_PASSWORD` 并重启容器即可
+- 密码支持任意字符（含中文）；登录接口带来源级限速：同一 IP 10 分钟内失败 8 次后暂时拒绝
+- 未设置该变量时服务无鉴权（旧行为），仅适合完全可信的内网环境
+
+恢复功能自带两道前置检查：设备必须在线、必须已有成功备份；若手机没关「查找我的 iPhone」，失败原因里会直接给出解决办法。
+
 ## HTTP API
 
 <details>
 <summary>展开接口列表</summary>
 
 ```
+POST   /api/login                  {password} 登录（启用 IVAULT_PASSWORD 时）
+POST   /api/logout                 退出登录
 GET    /api/status                 服务状态 / 在线设备 / 磁盘剩余
-GET    /api/devices                已配对设备（含在线状态、快照统计）
+GET    /api/devices                已配对设备（含在线状态、备份统计）
 DELETE /api/devices/{udid}         取消配对
 POST   /api/pair/begin             开始配对向导
 GET    /api/pair/{sid}/events      SSE：waiting → found → pairing → done / error
 POST   /api/backups                {udid} 触发备份
 GET    /api/jobs/{id}/events       SSE：progress / log / done / failed
 POST   /api/jobs/{id}/cancel       取消任务
-GET    /api/snapshots              快照列表（含 has_log / error）
+GET    /api/snapshots              备份记录列表（含 has_log / error）
 GET    /api/snapshots/{id}/log     某次任务的完整日志（事后排查）
-DELETE /api/snapshots/{id}         删除快照记录
+DELETE /api/snapshots/{id}         删除备份记录
 POST   /api/restore                {udid} 恢复最近一份成功备份
 GET/PUT /api/settings              定时、保留数、Webhook
 GET    /api/diagnostics            版本 / 系统 / 设备 / 最近告警，纯文本一键复制
@@ -297,7 +321,7 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 
 ## 已知限制
 
-1. **快照共享基线目录**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，磁盘上只有「最新状态」。备份库里的历史记录是时间点标记，删记录不会立刻释放空间。
+1. **备份共享基线目录**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，磁盘上只有「最新状态」。备份库里的历史记录是时间点标记，删记录不会立刻释放空间——「保留 1–10 份」当前也只作用于记录条目，并不能在磁盘上留存多个可恢复的时间点版本。
 2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在 iPhone 侧开启加密备份并牢记密码——密码不会写到 NAS 上。
 3. **无线备份的两个硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次。
 4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`——且必须用 `volumes:` 做 bind mount，写 `devices:` 会让热插拔失效（见「出问题怎么查」）。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。

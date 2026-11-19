@@ -29,6 +29,9 @@ services:
       - IVAULT_USBMUXD_VERBOSE=${IVAULT_USBMUXD_VERBOSE:-0}
       - IVAULT_OS_NAME=${IVAULT_OS_NAME:-}
       - IVAULT_WIFI=0
+      # Web 访问密码：强烈建议设置。留空 = 不启用鉴权。
+      - IVAULT_PASSWORD=${IVAULT_PASSWORD:-}
+      - IVAULT_MIN_FREE_GB=${IVAULT_MIN_FREE_GB:-2}
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - ${BACKUP_LOCATION:?请在 .env 中设置 BACKUP_LOCATION（宿主机上的备份目录绝对路径）}:/data/backups

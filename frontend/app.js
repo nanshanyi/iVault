@@ -30,9 +30,43 @@ async function api(path, opts) {
   if (!r.ok) {
     let msg = '请求失败 (' + r.status + ')';
     try { const j = await r.json(); msg = j.detail || msg; } catch (e) { /* ignore */ }
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = r.status;    // 401 时触发登录浮层用
+    throw err;
   }
   return r.json();
+}
+
+/* ---------- 登录（启用 IVAULT_PASSWORD 后，接口 401 时出现） ---------- */
+function showAuth() {
+  const ov = $('authOverlay');
+  if (!ov || ov.style.display === 'flex') return;
+  ov.style.display = 'flex';
+  lockScroll();
+  setTimeout(() => { const i = $('authPass'); if (i) i.focus(); }, 60);
+}
+async function doLogin() {
+  const btn = $('authBtn'), err = $('authErr');
+  const pw = $('authPass').value;
+  if (!pw) { err.textContent = '请输入密码'; err.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = '验证中…'; err.style.display = 'none';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw })
+    });
+    if (r.ok) { location.reload(); return; }
+    let msg = '登录失败 (' + r.status + ')';
+    try { msg = (await r.json()).detail || msg; } catch (e) { /* ignore */ }
+    err.textContent = msg; err.style.display = 'block';
+  } catch (e) {
+    err.textContent = '网络错误：' + e.message; err.style.display = 'block';
+  }
+  btn.disabled = false; btn.textContent = '登录';
+}
+async function doLogout() {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
+  location.reload();
 }
 // 容量统一按 1024 进制（与后端 human_size 保持一致）。
 // 之前这里用 1000 进制，而 NAS 的目录配额是按 1024 记的：512 GiB 的配额会被
@@ -158,7 +192,7 @@ function renderDashboard() {
   const devs = state.devices, snaps = state.snapshots;
   const total = devs.reduce((a, d) => a + (d.total_bytes || 0), 0);
   $('stTotal').textContent = fmtSize(total);
-  $('stTotalSub').textContent = devs.length + ' 台设备 · ' + snaps.filter(s => s.status === 'COMPLETE').length + ' 份快照';
+  $('stTotalSub').textContent = devs.length + ' 台设备 · ' + snaps.filter(s => s.status === 'COMPLETE').length + ' 条备份记录';
   $('stDevices').textContent = devs.length;
   const online = devs.filter(d => d.online).length;
   $('stDevicesSub').textContent = online + ' 台在线 · ' + (devs.length - online) + ' 台离线';
@@ -236,16 +270,16 @@ function renderDevices() {
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">UDID</span><span class="num">···' + esc(d.udid.slice(-12)) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">配对时间</span><span>' + fmtTs(d.paired_at) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
-          '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">快照数 / 占用</span><span class="num">' + (d.snapshot_count || 0) + ' 份 · ' + fmtSize(d.total_bytes) + '</span></div>' +
+          '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">记录数 / 占用</span><span class="num">' + (d.snapshot_count || 0) + ' 条 · ' + fmtSize(d.total_bytes) + '</span></div>' +
         '</div>' +
         (live || !state.status.wifi_enabled ? '' :
           '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--txt3);line-height:1.75">' +
           'Wi-Fi 没有发现这台设备：确认已在电脑端勾选「在 Wi-Fi 上与此 iPhone 同步」，' +
           '或插回数据线备份。</div>') +
         '<div style="padding:14px 20px;border-top:1px solid var(--stroke);display:flex;gap:9px">' +
-          '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + d.udid + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>' +
-          '<button class="btn" onclick="go(\'library\')">快照</button>' +
-          '<button class="btn danger" onclick="removeDevice(\'' + d.udid + '\')">取消配对</button>' +
+          '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + esc(d.udid) + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>' +
+          '<button class="btn" onclick="go(\'library\')">记录</button>' +
+          '<button class="btn danger" onclick="removeDevice(\'' + esc(d.udid) + '\')">取消配对</button>' +
         '</div></div>');
   });
   grid.insertAdjacentHTML('beforeend',
@@ -473,7 +507,7 @@ document.addEventListener('keydown', e => {
 /* ---------- 快照日志（事后排查用） ---------- */
 const _logCache = {};
 async function openSnapshotLog(id) {
-  $('logTitle').textContent = '快照 #' + String(id).padStart(4, '0') + ' 日志';
+  $('logTitle').textContent = '备份记录 #' + String(id).padStart(4, '0') + ' 日志';
   $('logMeta').textContent = '';
   $('logStatus').textContent = '—';
   $('logStatus').className = 'badge b';
@@ -615,7 +649,7 @@ function attachJob(jobId, udid, startedAt, kind) {
       $('prPhase').textContent = phase;
       $('jPhase').textContent = phase;
     } else if (d.type === 'done') {
-      finishJob('✓ 备份完成 · 快照 #' + (d.snapshot || '?') + ' 已保存到 NAS');
+      finishJob('✓ 备份完成 · 记录 #' + (d.snapshot || '?') + ' 已保存到 NAS');
     } else if (d.type === 'failed') {
       finishJob('备份失败：' + (d.error || '未知错误'));
     } else if (d.type === 'canceled') {
@@ -715,12 +749,15 @@ function renderLibrary() {
       '<td class="num">' + fmtSize(s.size_bytes) + '</td>' +
       '<td><span class="badge ' + badge + '">' + label + '</span></td>' +
       '<td style="text-align:right">' +
-        '<button class="btn ghost" style="font-size:12px;color:var(--green2)" onclick="restoreSnap(\'' + s.udid + '\')">恢复</button>' +
+        '<button class="btn ghost" style="font-size:12px;color:var(--green2)" onclick="restoreSnap(\'' + esc(s.udid) + '\')">恢复</button>' +
         '<button class="btn ghost" style="font-size:12px;color:var(--red)" onclick="deleteSnap(' + s.id + ')">删除</button></td></tr>');
   });
 }
 async function restoreSnap(udid) {
-  if (!confirm('将最近一次成功备份恢复到「' + devName(udid) + '」？\n恢复会覆盖设备当前数据，请确保设备已插线连接。')) return;
+  if (!confirm('将最近一次成功备份恢复到「' + devName(udid) + '」？\n\n' +
+    '· 恢复会覆盖设备当前数据，请先确认\n' +
+    '· 需先在手机上关闭「查找我的 iPhone」（设置 → Apple 账户 → 查找），否则恢复会失败\n' +
+    '· 恢复过程中请保持设备连接')) return;
   try {
     const r = await api('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ udid }) });
     toast('恢复任务已启动');
@@ -728,10 +765,10 @@ async function restoreSnap(udid) {
   } catch (e) { toast('恢复失败：' + e.message); }
 }
 async function deleteSnap(id) {
-  if (!confirm('删除快照记录 #' + id + '？\n注意：增量快照共享基线目录，物理数据不会立即删除。')) return;
+  if (!confirm('删除备份记录 #' + id + '？\n注意：磁盘上目前只保留最新一次可恢复状态，删除记录只是移除展示条目，不会释放磁盘空间。')) return;
   try {
     await api('/api/snapshots/' + id, { method: 'DELETE' });
-    toast('快照记录已删除');
+    toast('记录已删除');
     refresh();
   } catch (e) { toast('删除失败：' + e.message); }
 }
@@ -783,6 +820,8 @@ function renderSettings() {
   if (s.notify_webhook && document.activeElement !== $('whInput')) $('whInput').value = s.notify_webhook;
   $('schedBadge').textContent = on ? '定时：每天 ' + time : '定时：已关闭';
   $('retBadge').textContent = '保留策略：最近 ' + ret + ' 份 / 设备';
+  const authRow = $('authRow');
+  if (authRow) authRow.style.display = state.status && state.status.auth ? 'flex' : 'none';
 }
 function wireSettings() {
   const r = $('retRange');
@@ -823,6 +862,8 @@ async function refresh() {
     $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' +
       (st.active_jobs || []).length + ' 个进行中任务 · 无线通道' + (st.wifi_enabled ? '已启用' : '未启用（仅 USB）');
   } catch (e) {
+    /* 启用了访问密码且未登录：所有接口都会 401，弹登录浮层并停住常规提示 */
+    if (e && e.status === 401) { showAuth(); renderSideFoot(false); return; }
     renderSideFoot(true);
     toast('连接后端失败：' + e.message);
   }

@@ -7,6 +7,8 @@
 import asyncio
 import collections
 import datetime
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -59,9 +61,9 @@ logging.getLogger().addHandler(_ring)
 for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     logging.getLogger(_name).addHandler(_ring)
 
-# 版本号由镜像构建参数注入（CI 传 tag 名，形如 v0.3.2；本地开发回落到默认值）。
-# 前端模板自带 "v" 前缀，这里必须只保留裸版本号，否则界面会显示成 "vv0.3.2"。
-_raw_ver = os.environ.get("IVAULT_VERSION", "0.1.0").strip()
+# 版本号由镜像构建参数注入（CI 传 tag 名，形如 v0.4.0；本地开发回落到默认值）。
+# 前端模板自带 "v" 前缀，这里必须只保留裸版本号，否则界面会显示成 "vv0.4.0"。
+_raw_ver = os.environ.get("IVAULT_VERSION", "0.4.0").strip()
 VERSION = _raw_ver[1:] if _raw_ver[:1] in ("v", "V") else _raw_ver
 
 app = FastAPI(title="iVault", version=VERSION, docs_url="/api/docs")
@@ -91,6 +93,95 @@ async def _access_log(request: Request, call_next):
         lvl = log.info
     lvl("%s %s → %s  %.0fms", request.method, path, response.status_code, ms)
     return response
+
+
+# ---------------- 登录鉴权 ----------------
+# 服务以 privileged + host 网络运行，能写设备数据（恢复会覆盖整机），
+# 无鉴权时局域网里任何人都能调 /api/restore 或解除配对。
+# 通过 IVAULT_PASSWORD 启用；未设置时完全跳过，保持旧行为。
+# 实现刻意保持零依赖：HMAC 签名的时效 Cookie，签名密钥由口令派生——
+# 改密码立即让全部已有会话失效，这是想要的语义。
+COOKIE_NAME = "ivault_session"
+
+# 登录失败限速：按来源 IP 记最近 10 分钟的失败次数，防局域网内穷举
+_login_fails: dict[str, list[float]] = {}
+
+
+def _signing_key() -> bytes:
+    return hashlib.sha256(("ivault-session-v1:" + config.PASSWORD).encode()).digest()
+
+
+def _make_token() -> str:
+    exp = str(int(time.time()) + config.SESSION_DAYS * 86400)
+    sig = hmac.new(_signing_key(), exp.encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _check_token(token: str) -> bool:
+    try:
+        exp_s, sig = token.split(".", 1)
+        exp = int(exp_s)
+    except (ValueError, AttributeError):
+        return False
+    if exp < time.time():
+        return False
+    good = hmac.new(_signing_key(), exp_s.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, good)
+
+
+@app.middleware("http")
+async def _auth_guard(request: Request, call_next):
+    # 写在 _access_log 之后注册 → 位于其外层：401 直接短路返回，
+    # 未登录时的 6 秒轮询不会把告警环形缓冲刷满 401 记录。
+    if not config.PASSWORD:
+        return await call_next(request)
+    path = request.url.path
+    if path == "/api/login" or not path.startswith("/api"):
+        return await call_next(request)     # 登录接口与静态前端（登录页本身）放行
+    if _check_token(request.cookies.get(COOKIE_NAME, "")):
+        return await call_next(request)
+    return JSONResponse({"detail": "需要登录"}, status_code=401)
+
+
+@app.post("/api/login")
+async def login(request: Request, body: dict):
+    ip = request.client.host if request.client else "?"
+    now = time.time()
+    # 顺手清掉过期条目：失败过的 IP 若不再尝试，记录不能永远留在内存里
+    for k, v in list(_login_fails.items()):
+        if not v or now - v[-1] >= 600:
+            _login_fails.pop(k, None)
+    fails = [t for t in _login_fails.get(ip, []) if now - t < 600]
+    if len(fails) >= 8:
+        raise HTTPException(429, "尝试次数过多，请 10 分钟后再试")
+    if not config.PASSWORD:
+        raise HTTPException(400, "未启用登录：设置环境变量 IVAULT_PASSWORD 后重启容器")
+    pw = str(body.get("password") or "")
+    # 必须编码成 bytes 再比较：compare_digest 对含非 ASCII 的 str 会抛
+    # TypeError（接口 500），密码含中文时将永远登不进去，且这类请求
+    # 还绕过了失败计数。utf-8 两侧同编码后比较恒安全。
+    try:
+        ok = hmac.compare_digest(pw.encode("utf-8"), config.PASSWORD.encode("utf-8"))
+    except (TypeError, UnicodeEncodeError):
+        ok = False
+    if not ok:
+        fails.append(now)
+        _login_fails[ip] = fails
+        log.warning("登录失败（来源 %s，10 分钟内第 %d 次）", ip, len(fails))
+        raise HTTPException(401, "密码不正确")
+    _login_fails.pop(ip, None)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(COOKIE_NAME, _make_token(), max_age=config.SESSION_DAYS * 86400,
+                    httponly=True, samesite="lax")
+    return resp
+
+
+@app.post("/api/logout")
+async def logout():
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(COOKIE_NAME, "", max_age=0, httponly=True, samesite="lax")
+    return resp
+
 
 _pair_sessions: dict[str, device.PairSession] = {}
 _state = {"online_devices": [], "transports": {}, "boot_at": time.time()}
@@ -220,6 +311,7 @@ async def status():
     return {
         "version": VERSION,
         "os_name": detect_os_name(),
+        "auth": bool(config.PASSWORD),
         "uptime_s": int(time.time() - _state["boot_at"]),
         "online_devices": _state["online_devices"],
         "transports": _state["transports"],
@@ -342,6 +434,18 @@ async def trigger_restore(body: dict):
     udid = body.get("udid")
     if not udid:
         raise HTTPException(400, "缺少 udid")
+    # 前置检查放在启动任务之前：恢复是少数会覆盖设备数据的操作，
+    # 让失败发生在请求阶段、带着明确原因返回，而不是起一个注定失败的任务。
+    if not any(s["status"] == "COMPLETE"
+               for s in store.list_snapshots(udid, limit=500)):
+        raise HTTPException(409, "还没有可恢复的成功备份，请先完成一次备份")
+    try:
+        await _refresh_transports()
+    except Exception as e:  # noqa: BLE001
+        log.warning("恢复前刷新设备失败：%s", e)
+    if udid not in _state["online_devices"]:
+        raise HTTPException(409, "设备当前不在线：恢复需要把手机插到 NAS 的 USB 口，"
+                                 "或确保无线可达且手机已解锁")
     # 恢复同样是设备级独占操作：备份正在写同一个目录时恢复会读到半成品
     try:
         job = jobs.start_restore(udid, job_id=uuid.uuid4().hex)
@@ -395,7 +499,7 @@ async def snapshot_log(snap_id: int):
     """
     s = store.get_snapshot(snap_id)
     if not s:
-        raise HTTPException(404, "快照不存在")
+        raise HTTPException(404, "记录不存在")
     return {
         "id": snap_id,
         "udid": s["udid"],
@@ -430,7 +534,7 @@ async def diagnostics():
     if not devs:
         add("（无）")
     add("")
-    add("--- 最近快照 ---")
+    add("--- 最近备份记录 ---")
     for s in store.list_snapshots(limit=8):
         flag = ("  " + (s.get("error") or "")[:80]) if s.get("error") else ""
         add(f"#{s['id']} {s['status']} {datetime.datetime.fromtimestamp(s['started_at']).strftime('%m-%d %H:%M')}"
@@ -467,8 +571,9 @@ async def snapshots(udid: str | None = None):
 async def del_snapshot(snap_id: int):
     snap = store.delete_snapshot(snap_id)
     if not snap:
-        raise HTTPException(404, "快照不存在")
-    return {"ok": True, "note": "增量快照共享基线目录，物理数据未删除，空间由保留策略统一回收"}
+        raise HTTPException(404, "记录不存在")
+    return {"ok": True,
+            "note": "磁盘上只保留最新一次可恢复状态；删除记录仅移除展示条目，不回收磁盘空间"}
 
 
 # ---------------- 设置 / 定时 ----------------
@@ -523,28 +628,11 @@ async def _scheduler_loop():
                         except jobs.DeviceBusy:
                             log.info("定时备份跳过 %s：已有进行中的任务", d["udid"])
                     jobs.cleanup_retention()
-                    await _notify("iVault 定时备份已触发")
+                    # 这里不再发 webhook：任务结果（成功/失败/取消）由 notify
+                    # 在每个任务收尾时推送，触发通知只会制造噪音。
         except Exception as e:
             log.warning("scheduler: %s", e)
         await asyncio.sleep(20)
-
-
-async def _notify(text: str):
-    url = store.get_setting("notify_webhook")
-    if not url:
-        return
-    try:
-        import urllib.request
-        import json as _json
-        req = urllib.request.Request(
-            url, data=_json.dumps({"text": text}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        await asyncio.get_event_loop().run_in_executor(
-            None, urllib.request.urlopen, req, 5
-        )
-    except Exception as e:
-        log.warning("notify: %s", e)
 
 
 # ---------------- 前端静态托管 ----------------
