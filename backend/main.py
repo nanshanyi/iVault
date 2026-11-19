@@ -183,6 +183,14 @@ def _json_dumps(obj) -> str:
 @app.on_event("startup")
 async def startup():
     store.init_db()
+    # 上次退出时还在跑的任务不会自己收尾：内存里的 Job 已经没了，
+    # 数据库里的快照还停在 RUNNING。启动时统一对账，避免「永远进行中」。
+    try:
+        stale = store.fail_interrupted_snapshots()
+        if stale:
+            log.warning("上次退出时有 %d 个未收尾的快照，已标记为失败", stale)
+    except Exception as e:  # noqa: BLE001
+        log.warning("对账历史快照失败：%s", e)
     asyncio.create_task(_device_poller())
     asyncio.create_task(_scheduler_loop())
     log.info("iVault 启动完成，备份目录=%s", config.BACKUP_DIR)
@@ -320,9 +328,12 @@ async def trigger_backup(body: dict):
         log.warning("触发前刷新设备失败：%s", e)
     if udid not in _state["online_devices"]:
         raise HTTPException(409, "设备当前不在线（需插线，或确保 Wi-Fi 可达且已开启同步）")
-    if any(j["udid"] == udid for j in jobs.active_jobs()):
-        raise HTTPException(409, "该设备已有进行中的任务")
-    job = jobs.start_backup(udid, job_id=uuid.uuid4().hex)
+    # 设备互斥由 jobs 层统一裁决：HTTP 与定时调度器走的是同一条路，
+    # 检查与登记在同一个事件循环 tick 内完成，不会出现两个请求都通过的情况。
+    try:
+        job = jobs.start_backup(udid, job_id=uuid.uuid4().hex)
+    except jobs.DeviceBusy as e:
+        raise HTTPException(409, str(e)) from e
     return {"job_id": job.id, "snapshot_id": job.snap_id}
 
 
@@ -331,7 +342,11 @@ async def trigger_restore(body: dict):
     udid = body.get("udid")
     if not udid:
         raise HTTPException(400, "缺少 udid")
-    job = jobs.start_restore(udid, job_id=uuid.uuid4().hex)
+    # 恢复同样是设备级独占操作：备份正在写同一个目录时恢复会读到半成品
+    try:
+        job = jobs.start_restore(udid, job_id=uuid.uuid4().hex)
+    except jobs.DeviceBusy as e:
+        raise HTTPException(409, str(e)) from e
     return {"job_id": job.id}
 
 
@@ -497,9 +512,16 @@ async def _scheduler_loop():
                 if now == hhmm and store.get_setting("_last_run") != today:
                     store.set_setting("_last_run", today)
                     for d in store.list_devices():
-                        if d["udid"] in _state["online_devices"]:
+                        if d["udid"] not in _state["online_devices"]:
+                            continue
+                        # 手动备份 / 恢复正在跑时，定时任务让路：
+                        # 以前这里直接调 start_backup，绕过端点的占用检查，
+                        # 会在同一台设备上并出第二个进程写同一个目录。
+                        try:
                             jobs.start_backup(d["udid"], job_id=uuid.uuid4().hex)
                             log.info("定时备份已触发: %s", d["udid"])
+                        except jobs.DeviceBusy:
+                            log.info("定时备份跳过 %s：已有进行中的任务", d["udid"])
                     jobs.cleanup_retention()
                     await _notify("iVault 定时备份已触发")
         except Exception as e:

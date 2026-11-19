@@ -105,6 +105,9 @@ document.querySelectorAll('.nav-item').forEach(e => { e.onclick = () => go(e.dat
 /* ---------- 全局状态 ---------- */
 let state = { devices: [], snapshots: [], status: {}, settings: {} };
 let pairSource = null, jobSource = null, jobStartedAt = 0, logCount = 0, jobTick = null;
+/* 当前跟踪的任务：取消按钮与断线重连都靠它，不能只依赖 EventSource.url ——
+   连接一断 jobSource 就没了，那时候正是最需要「取消」的时候 */
+let currentJob = null;
 let lastUnpairUdid = null;
 
 /* ---------- 热力图（最近 105 天，按完成日聚合） ---------- */
@@ -569,20 +572,22 @@ async function startBackup(udid) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ udid })
     });
-    attachJob(r.job_id, udid);
+    attachJob(r.job_id, udid, null, 'BACKUP');
   } catch (e) {
     toast('无法开始备份：' + e.message);
   }
 }
-function attachJob(jobId, udid) {
-  if (jobSource) jobSource.close();
+function attachJob(jobId, udid, startedAt, kind) {
+  if (jobSource) { jobSource.close(); jobSource = null; }
+  currentJob = { id: jobId, udid: udid, kind: kind || 'BACKUP' };
   $('liveJob').style.display = 'block';
   $('navJobBadge').textContent = '1';
   $('navJobBadge').style.display = 'block';
-  $('jobTitle').textContent = '正在备份 · ' + devName(udid);
+  $('jobTitle').textContent = (currentJob.kind === 'RESTORE' ? '正在恢复 · ' : '正在备份 · ') + devName(udid);
   $('term').innerHTML = '';
   logCount = 0;
-  jobStartedAt = Date.now();
+  /* 重连时用服务端给的任务开始时间，计时器不会从 0 重新数 */
+  jobStartedAt = startedAt ? startedAt * 1000 : Date.now();
   $('prPct').textContent = '0%';
   $('prArc').style.strokeDashoffset = '402';
   $('prPhase').textContent = '准备中';
@@ -618,9 +623,12 @@ function attachJob(jobId, udid) {
     }
   };
   jobSource.onerror = () => {
-    // 后端流结束（任务已收尾）时浏览器会触发 error，此时刷新数据即可
+    /* 流结束、网络抖动、后端重启都会触发 error。以前这里直接 close，
+       等于放弃了 SSE 自带的重连：刷新页面或断一下网，进度和「取消」就再也
+       回不来了。现在回查一次后端活跃任务表再决定：还在跑就重新接上，
+       已经结束就按结束处理。 */
     if (jobSource) { jobSource.close(); jobSource = null; }
-    setTimeout(refresh, 800);
+    setTimeout(() => resyncJob(jobId, udid, 0), 1200);
   };
   clearInterval(jobTick);
   jobTick = setInterval(() => {
@@ -628,16 +636,38 @@ function attachJob(jobId, udid) {
     $('jElapsed').textContent = fmtDur((Date.now() - jobStartedAt) / 1000);
   }, 1000);
 }
-function finishJob(msg) {
-  if (jobSource) { jobSource.close(); jobSource = null; }
+/* 断线后与后端对齐：任务仍存在就重连，否则收尾。最多重试 10 次（约 30 秒），
+   后端整体不可达时交给 refresh() 的状态灯去提示，不要无限重连。 */
+async function resyncJob(jobId, udid, attempt) {
+  let list;
+  try {
+    list = await api('/api/jobs/active');
+  } catch (e) {
+    if (attempt < 10) { setTimeout(() => resyncJob(jobId, udid, attempt + 1), 3000); return; }
+    detachJob();
+    return;
+  }
+  const j = (list || []).find(x => x.id === jobId);
+  if (j) { attachJob(jobId, udid, j.started_at, j.kind); return; }
+  detachJob();
   $('prPhase').textContent = '已结束';
+  setTimeout(refresh, 600);
+}
+function detachJob() {
+  if (jobSource) { jobSource.close(); jobSource = null; }
+  currentJob = null;
+  if (jobTick) { clearInterval(jobTick); jobTick = null; }
   $('navJobBadge').style.display = 'none';
+}
+function finishJob(msg) {
+  detachJob();
+  $('prPhase').textContent = '已结束';
   toast(msg);
   setTimeout(refresh, 1200);
 }
 async function cancelJob() {
-  if (!jobSource) { toast('当前没有进行中的任务'); return; }
-  const id = jobSource.url.split('/').slice(-2)[0];
+  const id = currentJob && currentJob.id;
+  if (!id) { toast('当前没有进行中的任务'); return; }
   try {
     await api('/api/jobs/' + id + '/cancel', { method: 'POST' });
     toast('已发送取消请求');
@@ -694,7 +724,7 @@ async function restoreSnap(udid) {
   try {
     const r = await api('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ udid }) });
     toast('恢复任务已启动');
-    attachJob(r.job_id, udid);
+    attachJob(r.job_id, udid, null, 'RESTORE');
   } catch (e) { toast('恢复失败：' + e.message); }
 }
 async function deleteSnap(id) {
@@ -783,6 +813,11 @@ async function refresh() {
     state.status = st; state.devices = devs; state.snapshots = snaps; state.settings = settings;
     renderDashboard(); renderDevices(); renderHistory(); renderLibrary(); renderSettings();
     renderSideFoot(false);
+    /* 刷新页面 / 断开重开之后，后端可能还有任务在跑：自动重新接上，
+       否则任务在跑却看不到进度，也没有「取消」入口。 */
+    const live = (st.active_jobs || [])[0];
+    if (live && !jobSource) attachJob(live.id, live.udid, live.started_at, live.kind);
+    else if (!live && !jobSource) currentJob = null;
     $('setPath').textContent = st.backup_dir || '—';
     $('aboutText').textContent = 'iVault v' + st.version + ' · 备份目录 ' + st.backup_dir;
     $('aboutOnline').textContent = (st.online_devices || []).length + ' 台在线 · ' +

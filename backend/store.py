@@ -146,6 +146,21 @@ def finish_snapshot(snap_id: int, status="COMPLETE", size_bytes=0, snap_type=Non
 MAX_LOG_CHARS = 24000
 
 
+def fail_interrupted_snapshots(reason: str = "服务重启，任务被中断") -> int:
+    """把上次进程留下的 RUNNING 记录标成 FAILED，返回条数。
+
+    任务状态只活在内存里：容器一重启，Job 对象没了，但快照记录还停在
+    RUNNING —— 界面上会永远显示「进行中」，保留策略也不会把它算进去。
+    启动时对账一次，让这些记录有个明确的结局。
+    """
+    cur = conn().execute(
+        "UPDATE snapshots SET status='FAILED', finished_at=?, error=? WHERE status='RUNNING'",
+        (int(time.time()), reason[:500]),
+    )
+    conn().commit()
+    return cur.rowcount
+
+
 def save_snapshot_log(snap_id: int, log_text: str, error: str = ""):
     """任务结束时把日志尾部与失败原因写进快照记录。
 
