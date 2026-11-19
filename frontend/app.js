@@ -184,26 +184,34 @@ function clearLog() {
   if (term) term.innerHTML = '';
 }
 
-/* 设备卡片上的进度带：SSE 的进度事件直接推进去，不必等 6 秒轮询；
-   找不到卡片（用户在别的页面 / 已重渲染）就安静跳过。 */
+/* 进度更新：设备管理页的卡片进度带 + 总览「我的设备」的细进度条与徽标，
+   两处都由 SSE 直接驱动，不必等 6 秒轮询；找不到元素就安静跳过。 */
 function updateDeviceProgress(udid, pct, phase, elapsed) {
-  const box = document.getElementById('dp-' + udid);
-  if (!box) return;
-  if (pct != null) {
-    const p = Math.max(0, Math.min(100, pct));
-    const fill = box.querySelector('.bar i');
+  const p = pct == null ? null : Math.max(0, Math.min(100, pct));
+  const box = document.getElementById('dp-' + udid);          // 设备管理页卡片
+  if (box) {
+    if (p != null) {
+      const fill = box.querySelector('.bar i');
+      if (fill) fill.style.width = p + '%';
+      const num = box.querySelector('.dp-pct');
+      if (num) num.textContent = p + '%';
+    }
+    if (phase) {
+      const ph = box.querySelector('.dp-phase');
+      if (ph && ph.textContent !== phase) ph.textContent = phase;
+    }
+    if (elapsed != null) {
+      const el = box.querySelector('.dp-elapsed');
+      if (el) el.textContent = ' · 已用 ' + elapsed;
+    }
+  }
+  const mini = document.getElementById('dpm-' + udid);        // 总览紧凑行
+  if (mini && p != null) {
+    const fill = mini.firstElementChild;
     if (fill) fill.style.width = p + '%';
-    const num = box.querySelector('.dp-pct');
-    if (num) num.textContent = p + '%';
   }
-  if (phase) {
-    const ph = box.querySelector('.dp-phase');
-    if (ph && ph.textContent !== phase) ph.textContent = phase;
-  }
-  if (elapsed != null) {
-    const el = box.querySelector('.dp-elapsed');
-    if (el) el.textContent = ' · 已用 ' + elapsed;
-  }
+  const pc = document.getElementById('dpc-' + udid);
+  if (pc && p != null) pc.textContent = Math.round(p) + '%';
 }
 /* 当前跟踪的任务：取消按钮与断线重连都靠它，不能只依赖 EventSource.url ——
    连接一断 jobSource 就没了，那时候正是最需要「取消」的时候 */
@@ -289,13 +297,23 @@ function renderDashboard() {
     const days = d.last_backup_at ? Math.floor((Date.now() / 1000 - d.last_backup_at) / 86400) : null;
     const conn = d.connection || (d.online ? 'usb' : 'offline');
     const live = conn !== 'offline';
+    const job = (state.status.active_jobs || []).find(j => j.udid === d.udid);
+    const pct = Math.max(0, Math.min(100, (job && job.progress) || 0));
     box.insertAdjacentHTML('beforeend',
       '<div class="dev-card" onclick="go(\'devices\')">' +
         '<div class="dev-ico"><svg viewBox="0 0 24 24" fill="none" stroke="' + (live ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
-        '<div class="info"><b>' + esc(d.name || '设备') + '</b><div class="meta">' +
+        '<div class="info" style="flex:1;min-width:0"><b>' + esc(d.name || '设备') + '</b>' +
+          (job ? '<span class="chip-run"><i></i>备份中</span>' : '') +
+          '<div class="meta">' +
           esc(d.ios_version ? 'iOS ' + d.ios_version : '') + ' · UDID ····' + esc(d.udid.slice(-4)) +
-          ' · ' + (days == null ? '未备份过' : days === 0 ? '今天已备份' : days + ' 天未备份') + '</div></div>' +
-        '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' + (conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线') + '</span>' +
+          ' · ' + (job ? esc(job.phase || '正在备份') : days == null ? '未备份过' : days === 0 ? '今天已备份' : days + ' 天未备份') + '</div>' +
+          /* 任务进行中：信息行下加一条进度（条 + 百分比），连接状态仍在右侧徽标里 */
+          (job ? '<div class="dp-line"><div class="dp-mini" id="dpm-' + esc(d.udid) + '">' +
+                   '<i style="width:' + pct + '%"></i></div>' +
+                   '<b class="dp-pct" id="dpc-' + esc(d.udid) + '">' + pct + '%</b></div>' : '') +
+        '</div>' +
+        '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' +
+          (conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线') + '</span>' +
         '</div>');
   });
 
@@ -322,14 +340,17 @@ function renderDevices() {
     const job = (state.status.active_jobs || []).find(j => j.udid === d.udid);
     const conn = d.connection || (d.online ? 'usb' : 'offline');
     const live = conn !== 'offline';
-    const badge = job ? '备份中' : conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线';
+    /* 徽标永远表示连接方式（Wi-Fi / USB / 离线）；「备份中」用名字旁的胶囊表达，
+       两种状态都要看得见，不能互相顶掉 */
+    const badge = conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线';
     grid.insertAdjacentHTML('beforeend',
       '<div class="card" style="padding:0;overflow:hidden">' +
         '<div style="padding:20px;display:flex;gap:15px;align-items:center">' +
           '<div class="dev-ico" style="width:52px;height:52px"><svg viewBox="0 0 24 24" fill="none" stroke="' + (live ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7" style="width:26px;height:26px"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
           '<div style="flex:1"><b style="font-size:15px">' + esc(d.name || '设备') + '</b>' +
+          (job ? '<span class="chip-run"><i></i>备份中</span>' : '') +
           '<div style="font-size:11.5px;color:var(--txt3);margin-top:4px">' + esc(d.model || '') + ' · iOS ' + esc(d.ios_version || '?') + '</div></div>' +
-          '<span class="badge ' + (live || job ? 'g' : 'a') + '"><i class="tag-ico"></i>' + badge + '</span>' +
+          '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' + badge + '</span>' +
         '</div>' +
         '<div style="padding:0 20px 20px;font-size:12.5px;color:var(--txt2);line-height:2.15">' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">连接方式</span><span>' + (CONN_LABEL[conn] || '未连接') + '</span></div>' +
