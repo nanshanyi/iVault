@@ -139,6 +139,72 @@ document.querySelectorAll('.nav-item').forEach(e => { e.onclick = () => go(e.dat
 /* ---------- 全局状态 ---------- */
 let state = { devices: [], backups: [], status: {}, settings: {} };
 let pairSource = null, jobSource = null, jobStartedAt = 0, logCount = 0, jobTick = null;
+
+/* 终端日志的渲染节流。任务跑起来后 SSE 一秒能来几十条，以前是每条都
+   insertAdjacentHTML + 强制滚动一次，主线程被拖死、页面直接卡住。
+   现在先入队，一帧只渲染一次；并且只保留最近 MAX 行，DOM 不再无限增长。 */
+const TERM_MAX_LINES = 300;   // 终端最多保留的行数
+const TERM_LINE_MAX = 600;    // 单行最长字符数（超长输出截断，防止一条撑爆布局）
+let logQueue = [];
+let logRaf = 0;
+function queueLog(line) {
+  if (line.length > TERM_LINE_MAX) line = line.slice(0, TERM_LINE_MAX) + ' …';
+  logQueue.push(line);
+  if (logRaf) return;
+  logRaf = requestAnimationFrame(flushLog);
+}
+function flushLog() {
+  logRaf = 0;
+  const term = $('term');
+  if (!term) { logQueue = []; return; }
+  const time = new Date().toTimeString().slice(0, 8);
+  const frag = document.createDocumentFragment();
+  logQueue.forEach(line => {
+    const row = document.createElement('div');
+    row.className = 'ln';
+    const t = document.createElement('span');
+    t.className = 'dim';
+    t.textContent = time + '  ';
+    row.appendChild(t);
+    /* 用 textContent 而不是拼 HTML：省掉每次 esc() 的开销，
+       也天然免疫日志里的尖括号 */
+    row.appendChild(document.createTextNode(line));
+    frag.appendChild(row);
+  });
+  logQueue = [];
+  term.appendChild(frag);
+  while (term.children.length > TERM_MAX_LINES) term.removeChild(term.firstChild);
+  $('jSpeed').textContent = logCount + ' 行';
+  term.scrollTop = term.scrollHeight;
+}
+function clearLog() {
+  logQueue = [];
+  if (logRaf) { cancelAnimationFrame(logRaf); logRaf = 0; }
+  const term = $('term');
+  if (term) term.innerHTML = '';
+}
+
+/* 设备卡片上的进度带：SSE 的进度事件直接推进去，不必等 6 秒轮询；
+   找不到卡片（用户在别的页面 / 已重渲染）就安静跳过。 */
+function updateDeviceProgress(udid, pct, phase, elapsed) {
+  const box = document.getElementById('dp-' + udid);
+  if (!box) return;
+  if (pct != null) {
+    const p = Math.max(0, Math.min(100, pct));
+    const fill = box.querySelector('.bar i');
+    if (fill) fill.style.width = p + '%';
+    const num = box.querySelector('.dp-pct');
+    if (num) num.textContent = p + '%';
+  }
+  if (phase) {
+    const ph = box.querySelector('.dp-phase');
+    if (ph && ph.textContent !== phase) ph.textContent = phase;
+  }
+  if (elapsed != null) {
+    const el = box.querySelector('.dp-elapsed');
+    if (el) el.textContent = ' · 已用 ' + elapsed;
+  }
+}
 /* 当前跟踪的任务：取消按钮与断线重连都靠它，不能只依赖 EventSource.url ——
    连接一断 jobSource 就没了，那时候正是最需要「取消」的时候 */
 let currentJob = null;
@@ -276,10 +342,22 @@ function renderDevices() {
           '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--txt3);line-height:1.75">' +
           'Wi-Fi 没有发现这台设备：确认已在电脑端勾选「在 Wi-Fi 上与此 iPhone 同步」，' +
           '或插回数据线备份。</div>') +
+        /* 任务进行中才出现的进度带：高度固定，刷新时只改宽度和数字，卡片不抖 */
+        (job ?
+          '<div class="dev-prog" id="dp-' + esc(d.udid) + '">' +
+            '<div class="dp-top">' +
+              '<span><span class="dp-phase">' + esc(job.phase || '准备中') + '</span>' +
+                '<span class="dp-elapsed"> · 已用 ' + fmtDur(Math.max(0, Date.now() / 1000 - (job.started_at || Date.now() / 1000))) + '</span></span>' +
+              '<b class="dp-pct">' + (job.progress || 0) + '%</b></div>' +
+            '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, job.progress || 0)) + '%"></i></div>' +
+          '</div>' : '') +
         '<div style="padding:14px 20px;border-top:1px solid var(--stroke);display:flex;gap:9px">' +
-          '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + esc(d.udid) + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>' +
+          (job
+            /* 任务跑着的时候再点「立即备份」只会撞上「设备忙」，直接给进度入口 */
+            ? '<button class="btn primary" style="flex:1;justify-content:center" onclick="go(\'tasks\')">查看进度</button>'
+            : '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + esc(d.udid) + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>') +
           '<button class="btn" onclick="go(\'library\')">记录</button>' +
-          '<button class="btn danger" onclick="removeDevice(\'' + esc(d.udid) + '\')">取消配对</button>' +
+          '<button class="btn danger"' + (job ? ' disabled title="任务进行中，取消配对会中断备份"' : '') + ' onclick="removeDevice(\'' + esc(d.udid) + '\')">取消配对</button>' +
         '</div></div>');
   });
   grid.insertAdjacentHTML('beforeend',
@@ -607,6 +685,7 @@ async function startBackup(udid) {
       body: JSON.stringify({ udid })
     });
     attachJob(r.job_id, udid, null, 'BACKUP');
+    refresh();   // 让总览里的设备卡片立刻出现进度带，不用等下一次轮询
   } catch (e) {
     toast('无法开始备份：' + e.message);
   }
@@ -619,6 +698,7 @@ function attachJob(jobId, udid, startedAt, kind) {
   $('navJobBadge').style.display = 'block';
   $('jobTitle').textContent = (currentJob.kind === 'RESTORE' ? '正在恢复 · ' : '正在备份 · ') + devName(udid);
   $('term').innerHTML = '';
+  clearLog();
   logCount = 0;
   /* 重连时用服务端给的任务开始时间，计时器不会从 0 重新数 */
   jobStartedAt = startedAt ? startedAt * 1000 : Date.now();
@@ -635,19 +715,20 @@ function attachJob(jobId, udid, startedAt, kind) {
     let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
     if (d.type === 'log') {
       logCount++;
-      const term = $('term');
-      const time = new Date().toTimeString().slice(0, 8);
-      term.insertAdjacentHTML('beforeend', '<span class="dim">' + time + '</span>  ' + esc(d.line) + '\n');
-      term.scrollTop = term.scrollHeight;
-      $('jSpeed').textContent = logCount + ' 行';
+      queueLog(d.line);
     } else if (d.type === 'progress') {
       const p = Math.max(0, Math.min(100, d.progress || 0));
-      $('prPct').textContent = p + '%';
-      $('prArc').style.strokeDashoffset = String(402 * (1 - p / 100));
-      $('jDone').textContent = p + '% 完成';
+      if ($('prPct').textContent !== p + '%') {   // 值没变就不碰 DOM
+        $('prPct').textContent = p + '%';
+        $('prArc').style.strokeDashoffset = String(402 * (1 - p / 100));
+        $('jDone').textContent = p + '% 完成';
+      }
       const phase = d.phase || '正在传输';
-      $('prPhase').textContent = phase;
-      $('jPhase').textContent = phase;
+      if ($('prPhase').textContent !== phase) {
+        $('prPhase').textContent = phase;
+        $('jPhase').textContent = phase;
+      }
+      if (currentJob) updateDeviceProgress(currentJob.udid, p, phase);
     } else if (d.type === 'done') {
       finishJob('✓ 备份完成 · 记录 #' + (d.backup_id || '?') + ' 已保存到 NAS');
     } else if (d.type === 'failed') {
@@ -667,7 +748,10 @@ function attachJob(jobId, udid, startedAt, kind) {
   clearInterval(jobTick);
   jobTick = setInterval(() => {
     if (!jobSource) { clearInterval(jobTick); jobTick = null; return; }
-    $('jElapsed').textContent = fmtDur((Date.now() - jobStartedAt) / 1000);
+    const el = fmtDur((Date.now() - jobStartedAt) / 1000);
+    $('jElapsed').textContent = el;
+    /* 卡片上的「已用」也跟着秒走，两处时间不会一个跳一个停 */
+    if (currentJob) updateDeviceProgress(currentJob.udid, null, null, el);
   }, 1000);
 }
 /* 断线后与后端对齐：任务仍存在就重连，否则收尾。最多重试 10 次（约 30 秒），

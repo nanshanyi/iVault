@@ -22,12 +22,19 @@ from . import config, device, notify, store
 
 log = logging.getLogger("ivault.jobs")
 
-PROGRESS_RE = re.compile(r"Total progress:\s*(\d+)")
-DONE_RE = re.compile(r"(Backup (finished|complete)|Finished)")
+# idevicebackup2 的进度是 `\r[====   ] 45.2%` 这种「回车覆盖同一行」的写法，
+# 整轮只在换阶段时才补一个 \n。按行读取会把几分钟的进度憋成一条巨型字符串
+# （前端一次性插入几 MB HTML 会直接卡死浏览器，超长行还会让 readline 抛
+# ValueError 把任务拽出循环）。所以这里按 \r 和 \n 一起切分。
+PROGRESS_RE = re.compile(r"(\d{1,3})(?:\.\d+)?%")
 
-# 子进程输出的单行上限。asyncio 默认 64 KiB，超长行会让 readline 抛
-# ValueError（"Separator is not found, and chunk exceed the limit"），
-# 直接把任务拽出循环。放大到 1 MiB 之后仍要兜底，见 `_fail()`。
+# 单行上限：进度条很密时不必完整保留，截断即可（日志是给人看的）。
+LINE_MAX = 400
+# 进度事件节流：两次广播至少间隔这么久，避免每毫秒一条把 SSE 和前端压垮。
+PROGRESS_MIN_INTERVAL = 0.4
+# 进度条写进终端日志的最小间隔：保留可读的轨迹，但不必每一帧都留痕。
+PROGRESS_LOG_INTERVAL = 2.0
+
 STREAM_LIMIT = 1 << 20
 
 # 活跃任务表：job_id -> Job
@@ -66,6 +73,8 @@ class Job:
         self.finalized = False                # 事件只收尾一次
         self._backup_closed = False             # 备份记录只收尾一次
         self._cancel_requested = False        # 取消可能早于子进程创建
+        self._last_prog_ts = 0.0              # 上一次广播进度的时间（节流用）
+        self._last_prog_log_ts = 0.0          # 上一次把进度条写进日志的时间
 
     # ----- 事件广播 -----
 
@@ -94,6 +103,38 @@ class Job:
         if len(self.log_stamped) > 2000:
             self.log_stamped.pop(0)
         self.broadcast({"type": "log", "line": line})
+
+    def _emit(self, seg: str):
+        """处理子进程输出的一段：带百分比的当进度，其余原样进日志。
+
+        idevicebackup2 的进度条一秒钟能刷几十次，原样转发会把 SSE 和前端
+        压垮，所以进度事件按 PROGRESS_MIN_INTERVAL 节流，日志每两秒留一条。
+        """
+        line = seg.strip()
+        if not line:
+            return
+        if len(line) > LINE_MAX:
+            line = line[:LINE_MAX] + " …"
+        now = time.time()
+        pcts = PROGRESS_RE.findall(line)
+        if pcts:
+            try:
+                pct = int(pcts[-1])
+            except ValueError:
+                pct = None
+            if pct is not None:
+                # 进度只增不减：多段输出混排时不会来回跳
+                self.progress = max(self.progress, min(100, pct))
+                self.phase = "正在传输数据"
+                if now - self._last_prog_ts >= PROGRESS_MIN_INTERVAL:
+                    self._last_prog_ts = now
+                    self.broadcast({"type": "progress", "progress": self.progress,
+                                    "phase": self.phase})
+                if now - self._last_prog_log_ts >= PROGRESS_LOG_INTERVAL:
+                    self._last_prog_log_ts = now
+                    self.add_log(line)
+                return
+        self.add_log(line)
 
     def _log_text(self, header: str = "") -> str:
         body = "\n".join(self.log_stamped)
@@ -213,17 +254,24 @@ class Job:
             return -1
         try:
             assert self.proc.stdout
-            async for raw in self.proc.stdout:
-                line = raw.decode(errors="replace").rstrip()
-                if not line.strip():
-                    continue
-                self.add_log(line)
-                m = PROGRESS_RE.search(line)
-                if m:
-                    self.progress = min(100, int(m.group(1)))
-                    self.phase = "正在传输数据"
-                    self.broadcast({"type": "progress", "progress": self.progress,
-                                    "phase": self.phase})
+            buf = ""
+            # 用 read(n) 而不是 async for（后者按 \n 分帧）：进度条只发 \r，
+            # 按行读会憋成一条巨型字符串，前端一次插入几 MB HTML 直接卡死，
+            # 超长行还会触发 asyncio 的行长上限、把任务拽出循环。
+            while True:
+                data = await self.proc.stdout.read(8192)
+                if not data:
+                    break
+                buf += data.decode(errors="replace")
+                parts = re.split(r"[\r\n]", buf)
+                buf = parts.pop()          # 末尾可能是半截输出，留到下一轮
+                for seg in parts:
+                    self._emit(seg)
+                if len(buf) > LINE_MAX * 4:   # 长时间不换行：及时吐出去，别无限膨胀
+                    self._emit(buf)
+                    buf = ""
+            if buf.strip():
+                self._emit(buf)
         finally:
             if self.proc and self.proc.returncode is None:
                 await self._kill_proc()
