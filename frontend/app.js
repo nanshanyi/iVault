@@ -153,6 +153,10 @@ const TERM_MAX_LINES = 300;   // 终端最多保留的行数
 const TERM_LINE_MAX = 600;    // 单行最长字符数（超长输出截断，防止一条撑爆布局）
 let logQueue = [];
 let logRaf = 0;
+/* 活动行：终端最后那一行，收到新状态就改文本而不是追加。
+   idevicebackup2 本来就是用 \r 原地刷新，后端把那些帧转成 live 事件发过来，
+   这里还原成"一行在走"的观感，日志行数也不会被进度帧撑爆。 */
+let liveRow = null;
 function queueLog(line) {
   if (line.length > TERM_LINE_MAX) line = line.slice(0, TERM_LINE_MAX) + ' …';
   logQueue.push(line);
@@ -178,13 +182,36 @@ function flushLog() {
     frag.appendChild(row);
   });
   logQueue = [];
-  term.appendChild(frag);
+  /* 有活动行时插到它前面：活动行永远贴在底部，不会被后来的普通行顶到中间 */
+  if (liveRow && liveRow.parentNode === term) term.insertBefore(frag, liveRow);
+  else term.appendChild(frag);
   while (term.children.length > TERM_MAX_LINES) term.removeChild(term.firstChild);
+  if (liveRow && !liveRow.isConnected) liveRow = null;   // 被行数上限裁掉了
   $('jSpeed').textContent = logCount + ' 行';
+  term.scrollTop = term.scrollHeight;
+}
+/* 末行原地替换：没有活动行就新建一条，有就只改文本和它的时间戳 */
+function renderLive(text) {
+  const term = $('term');
+  if (!term) return;
+  if (text.length > TERM_LINE_MAX) text = text.slice(0, TERM_LINE_MAX) + ' …';
+  if (!liveRow || !liveRow.isConnected) {
+    liveRow = document.createElement('div');
+    liveRow.className = 'ln live';
+    const t = document.createElement('span');
+    t.className = 'dim';
+    liveRow.appendChild(t);
+    liveRow.appendChild(document.createTextNode(''));
+    term.appendChild(liveRow);
+  }
+  liveRow.firstChild.textContent = new Date().toTimeString().slice(0, 8) + '  ';
+  liveRow.lastChild.textContent = text;
+  while (term.children.length > TERM_MAX_LINES) term.removeChild(term.firstChild);
   term.scrollTop = term.scrollHeight;
 }
 function clearLog() {
   logQueue = [];
+  liveRow = null;
   if (logRaf) { cancelAnimationFrame(logRaf); logRaf = 0; }
   const term = $('term');
   if (term) term.innerHTML = '';
@@ -795,6 +822,8 @@ function attachJob(jobId, udid, startedAt, kind) {
     if (d.type === 'log') {
       logCount++;
       queueLog(d.line);
+    } else if (d.type === 'live') {
+      renderLive(d.text);           // 末行原地刷新，不占日志行数
     } else if (d.type === 'progress') {
       const p = Math.max(0, Math.min(100, d.progress || 0));
       if ($('prPct').textContent !== p + '%') {   // 值没变就不碰 DOM

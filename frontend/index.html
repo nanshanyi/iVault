@@ -364,6 +364,9 @@ html[data-view="settings"] #view-settings{display:block}
 .term .dim{color:#4a6a5c}
 /* 一行一个 div：便于按行裁剪，long 输出也不会撑破容器 */
 .term .ln{white-space:pre-wrap;word-break:break-all}
+/* 活动行：当前正在收发的文件，原地刷新。颜色略亮，一眼能和历史行区分 */
+.term .ln.live{color:#9ff0cd}
+.term .ln.live::before{content:"▸ ";color:var(--green2)}
 
 /* ===== 设备卡片上的任务进度带（仅任务进行中显示） ===== */
 .dev-prog{padding:0 20px 18px}

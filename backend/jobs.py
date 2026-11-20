@@ -34,14 +34,21 @@ log = logging.getLogger("ivault.jobs")
 # 取「最后一个百分比」会拿到文件进度，第一个文件传完就把整机进度顶到 100%。
 OVERALL_RE = re.compile(r"Backup\s*\[[^\]]*\]\s*(\d{1,3})\s*%")
 TOTAL_RE = re.compile(r"Total progress:\s*(\d{1,3})")
-FILE_PROG_RE = re.compile(r"\d{1,3}(?:\.\d+)?%\s+[\d.]+\s*[KMGT]i?B\s*/")
+# 单文件进度条：`[>       ]   0.0%   832 Bytes / 2.2 MB`
+# 单位有 Bytes / Byte / KB / KiB / MB 几种，早期只写了 [KMGT]i?B，
+# 漏掉 "Bytes" —— 于是所有小于 1KB 的文件行都漏过过滤（真实输出里绝大多数
+# 小文件都是这种），精简档被灌成详细档，3.5 万个文件就是 3.5 万行。
+FILE_PROG_RE = re.compile(r"\d{1,3}(?:\.\d+)?%\s+[\d.]+\s*(?:[KMGT]i?)?B(?:ytes?)?\s*/", re.I)
 # 每切换一个文件就会刷一遍的三类行：3.5 万个文件足以刷出几万行日志。
 # 它们只是「活动迹象」，隔几秒留一条就够，不必逐条入库。
 NOISE_RE = re.compile(r"^(Status\s|Receiving\s|Sending\s)")
 # 报错行必须无条件保留：真实输出里错误常常粘在 Status 行后面
 # （`Status Receiving filesERROR: Could not receive from mobilebackup2 (-256)`），
 # 如果先按前缀判噪声，最有用的那行就没了。
-ERROR_RE = re.compile(r"(?i)\b(error|fatal|failed|failure|abort\w*|cannot|could not|denied|invalid|refused)\b")
+# 但只认大写 ERROR/FATAL：设备端报错一直是这个写法，而小写 error 会命中文件名
+# （App 里 `.../js/error.1984885a.js` 极常见），那样每条 Receiving 都会被提成
+# 「错误」直接落日志，噪声过滤等于白做。
+ERROR_RE = re.compile(r"\b(?:ERROR|FATAL)\b|(?i:\b(?:failed|failure|abort\w*|cannot|could not|refused|denied|invalid)\b)")
 # 终端控制序列（清屏、光标上移等）：落库和前端都不该看到这些乱码
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
 
@@ -52,7 +59,24 @@ PROGRESS_MIN_INTERVAL = 0.4
 # 整机进度写进终端日志的最小间隔（界面上的进度环另有实时数据，日志只是留痕）。
 PROGRESS_LOG_INTERVAL = 5.0
 # 文件级噪声行的最小间隔（它们只是「还在动」的证据，10 秒一条足够）。
+# 活动行（"正在接收 …/xxx.js"）的节流：它只走 SSE、不落日志，
+# 前端拿它在末行原地刷新。一秒几十帧的单文件进度没必要逐帧推。
+LIVE_MIN_INTERVAL = 1.0
+# 里程碑步长：整机进度每涨 5% 才落一行日志，一次备份约 20 行。
+# 落库的日志要能回答"哪一段慢"，逐百分比留 100 行信息量并没变多。
+MILESTONE_STEP = 5
 NOISE_LOG_INTERVAL = 10.0
+
+
+def _fmt_size(n: int) -> str:
+    """字节数转人读单位（日志里一位小数足够）。"""
+    if n < 1024:
+        return f"{int(n)} B"
+    for unit in ("KB", "MB", "GB"):
+        n /= 1024
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+    return f"{n / 1024:.1f} TB"
 # 心跳：精简档不再记录文件级噪声，长时间没有任何输出时补一条，
 # 用来区分「慢慢跑」和「彻底卡死」。
 HEARTBEAT_INTERVAL = 300
@@ -111,6 +135,10 @@ class Job:
         self._last_noise_ts = 0.0             # 上一次把文件级噪声写进日志的时间
         self._last_log_ts = time.time()       # 上一次写日志的时间（心跳判据）
         self._last_logged_pct = -1            # 精简档：上一次写进日志的整机百分比
+        self._last_milestone = 0              # 上一次落日志的里程碑百分比
+        self._live_text = ""                  # 当前活动行文本（末行原地刷新用）
+        self._last_live_ts = 0.0              # 上一次推活动行的时间（节流用）
+        self._files_seen = 0                  # 本次任务收发过的文件数（Receiving/Sending 计数）
         self._verbose_cache: bool | None = None   # 日志详细度（设置项，懒加载）
 
     # ----- 事件广播 -----
@@ -151,11 +179,73 @@ class Job:
                 self._verbose_cache = False
         return self._verbose_cache
 
+    def _verb(self) -> str:
+        return "正在恢复" if self.kind == "RESTORE" else "正在备份"
+
+    def _header_text(self) -> str:
+        """任务头：谁、什么类型、加不加密、写到哪。开跑时一行，事后一眼能对上是哪次。"""
+        dst = store.get_device(self.udid) or {}
+        dst_name = dst.get("name") or "…" + self.udid[-6:]
+        if self.kind == "RESTORE":
+            src = store.get_device(self.source_udid) or {}
+            src_name = src.get("name") or "…" + self.source_udid[-6:]
+            enc = "加密备份" if self._env else "未加密备份"
+            return f"恢复 · 「{src_name}」→「{dst_name}」 · {enc}"
+        # 目录里已有 Manifest.plist 说明这是同一份备份的增量更新，
+        # 没有则是首次全量——idevicebackup2 自己就是这么判定的
+        has_base = os.path.isfile(os.path.join(config.BACKUP_DIR, self.udid, "Manifest.plist"))
+        enc = "已加密" if dst.get("encrypted") else "未加密"
+        return (f"{dst_name} · {'增量' if has_base else '全量'}备份 · {enc}"
+                f" · → {config.BACKUP_DIR}")
+
+    def _elapsed_text(self) -> str:
+        sec = max(0, int(time.time() - (self.started_at or time.time())))
+        if sec < 60:
+            return f"{sec} 秒"
+        if sec < 3600:
+            return f"{sec // 60} 分"
+        return f"{sec // 3600} 小时 {sec % 3600 // 60} 分"
+
+    def _live(self, text: str):
+        """活动行：只走 SSE，不进日志数组。
+
+        前端把它渲染在终端最后一行并原地替换——idevicebackup2 本来就是用 \\r
+        原地刷新一行进度，这里只是把那个语义还原回去，而不是把每一帧都追加成
+        一条日志。落库的版本不含这些帧，只在收尾时补最后一条，方便事后看出
+        「最后卡在哪个文件」。
+        """
+        if not text or text == self._live_text:
+            return
+        now = time.time()
+        if now - self._last_live_ts < LIVE_MIN_INTERVAL:
+            return
+        self._last_live_ts = now
+        self._live_text = text
+        self.broadcast({"type": "live", "text": text})
+
+    @staticmethod
+    def _activity(line: str) -> str | None:
+        """把一条文件级噪声行压成活动行文案；压不出有用信息的返回 None。
+
+        `Receiving .../AppOhoVip/7.0.50/js/error.js` → `正在接收 …/7.0.50/js/error.js`
+        只留路径尾部：完整路径动辄两三百字符，且开头全是重复的容器目录。
+        """
+        m = re.match(r"^(Receiving|Sending)\s+(\S.*)$", line)
+        if not m:
+            return None
+        tail = m.group(2).strip()
+        if len(tail) > 64:
+            tail = "…" + tail[-63:]
+        return ("正在接收 " if m.group(1) == "Receiving" else "正在发送 ") + tail
+
     def _emit(self, seg: str):
         """处理子进程输出的一段：整机进度单独识别，其余进日志。
 
         idevicebackup2 的进度条一秒钟能刷几十次，原样转发会把 SSE 和前端
-        压垮，所以进度事件按 PROGRESS_MIN_INTERVAL 节流，日志每两秒留一条。
+        压垮。所以这里分三档：
+          · 报错       —— 无条件落日志，不节流不判噪声
+          · 整机进度   —— 走 SSE 事件 + 每 MILESTONE_STEP 个百分比落一行
+          · 文件级噪声 —— 只更新「活动行」，不落日志（详细档才稀疏留痕）
         """
         line = ANSI_RE.sub("", seg).strip()
         if not line:
@@ -188,22 +278,31 @@ class Job:
                     self._last_prog_ts = now
                     self.broadcast({"type": "progress", "progress": self.progress,
                                     "phase": self.phase})
-                # 精简档：只在百分比真的变了才留一行 —— 整机进度只有 100 个刻度，
-                # 所以一次备份最多约 100 行，跟跑 1 小时还是 5 小时无关。
-                # 详细档：按时间留痕，便于看出「哪一段慢」。
-                if self._verbose():
-                    if now - self._last_prog_log_ts >= PROGRESS_LOG_INTERVAL:
-                        self._last_prog_log_ts = now
-                        self.add_log(line)
-                elif pct != self._last_logged_pct:
-                    self._last_logged_pct = pct
+                # 末行原地刷新：让人看到"还在动"，又不占日志行
+                self._live(f"{self._verb()} {self.progress}% · 已用 {self._elapsed_text()}")
+                # 里程碑：每 5% 落一行，约 20 行。带上已传文件数和耗时，
+                # 事后能看出「哪一段慢 / 传了多少」——只有百分比的话时间信息就丢了。
+                if self.progress - self._last_milestone >= MILESTONE_STEP:
+                    self._last_milestone = self.progress
+                    self.add_log(f"{self._verb()} {self.progress}%"
+                                 f" · 已传 {self._files_seen} 个文件"
+                                 f" · 已用 {self._elapsed_text()}")
+                # 详细档：额外按时间留痕（排查"哪一秒卡住"用）
+                if self._verbose() and now - self._last_prog_log_ts >= PROGRESS_LOG_INTERVAL:
+                    self._last_prog_log_ts = now
                     self.add_log(line)
                 return
 
-        # 文件级噪声（切换文件、单文件进度条）：精简档直接丢弃——3.5 万个文件
-        # 就是几万行，它们对事后排查没有价值（真卡住时有心跳兜住）；
-        # 详细档稀疏留痕。
+        # 文件级噪声（切换文件、单文件进度条）：不落日志，
+        # 只把「正在收发的文件」喂给活动行 —— 卡住时最后一条就是卡住的那个文件。
         if NOISE_RE.search(line) or FILE_PROG_RE.search(line):
+            # 每切换一个文件都会打一条 Receiving/Sending：拿它当文件计数器，
+            # 里程碑行里的「已传 N 个文件」就是这么来的（不额外扫盘）
+            if line.startswith(("Receiving", "Sending")):
+                self._files_seen += 1
+            act = self._activity(line)
+            if act:
+                self._live(act)
             if self._verbose() and now - self._last_noise_ts >= NOISE_LOG_INTERVAL:
                 self._last_noise_ts = now
                 self.add_log(line)
@@ -228,6 +327,10 @@ class Job:
 
     def _log_text(self, header: str = "") -> str:
         body = "\n".join(self.log_stamped)
+        # 收尾时补上最后一条活动行。它在跑的过程中不进日志（那是几万行），
+        # 但「最后一个收发的文件」恰恰是卡住或失败时最有用的线索。
+        if self._live_text and self.log_tail[-1:] != [self._live_text]:
+            body += "\n" + datetime.datetime.now().strftime("%H:%M:%S ") + self._live_text
         return (header + "\n" + body) if header else body
 
     def _persist_log(self, error: str = ""):
@@ -262,6 +365,11 @@ class Job:
             return
         self.finalized = True
         self.status = status
+        if status != "DONE":
+            # 失败/取消也留一句小结：没跑完的备份最需要知道「动了多少、花了多久」
+            label = "已取消" if status == "CANCELED" else "失败"
+            self.add_log(f"{label} · 本次传 {self._files_seen} 个文件"
+                         f" · 已用 {self._elapsed_text()}")
         if status == "CANCELED":
             self._persist_log("用户取消")
         else:
@@ -324,6 +432,7 @@ class Job:
 
         无论循环是正常结束还是抛异常，finally 都会保证进程不留在后台。
         """
+        self.add_log(self._header_text())
         self.add_log(f"$ {' '.join(args)}")
         if self._cancel_requested:
             # 还没起进程就被取消：连备份记录都不该开始写
@@ -436,6 +545,8 @@ class Job:
             if meta.get("encrypted") is not None:
                 store.set_device_encrypted(self.udid, meta["encrypted"])
             size = await _dir_size(dev_dir)
+            self.add_log(f"完成 · 本次传 {self._files_seen} 个文件"
+                         f" · 目录 {_fmt_size(size)} · 用时 {self._elapsed_text()}")
             self._close_backup("COMPLETE", size_bytes=size, backup_type=backup_type)
             self._finish("DONE", progress=100, size=size, backup_id=self.backup_id)
         else:
@@ -651,6 +762,7 @@ async def _run_restore_inner(job: "Job"):
     if job._cancel_requested or job.status == "CANCELED":
         job._finish("CANCELED")
     elif rc == 0:
+        job.add_log(f"完成 · 本次传 {job._files_seen} 个文件 · 用时 {job._elapsed_text()}")
         job._finish("DONE", progress=100)
     else:
         job._finish("FAILED", error=_restore_error(rc, "\n".join(job.log_tail[-40:]),
