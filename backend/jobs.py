@@ -15,6 +15,7 @@ import asyncio
 import datetime
 import logging
 import os
+import plistlib
 import re
 import time
 
@@ -67,20 +68,31 @@ class DeviceBusy(RuntimeError):
 
     备份与恢复都会动设备端的数据，而备份目录又是同一份可写状态（增量备份
     靠在同一目录里追加），并发跑不只会互相拖慢，还可能把备份目录写坏。
+    换机恢复时，来源设备的备份目录正在被读，它也算「忙」。
     """
 
-    def __init__(self, job: "Job"):
+    def __init__(self, job: "Job | None", udid: str = "", message: str = ""):
         self.job = job
-        kind = "恢复" if job.kind == "RESTORE" else "备份"
-        super().__init__(f"该设备已有进行中的{kind}任务")
+        if not message and job is not None:
+            if job.kind == "RESTORE" and udid and udid == job.source_udid and udid != job.udid:
+                message = "这台设备的备份正在被用来恢复另一台设备，请等恢复结束"
+            else:
+                kind = "恢复" if job.kind == "RESTORE" else "备份"
+                message = f"该设备已有进行中的{kind}任务"
+        super().__init__(message or "该设备正忙，请稍后再试")
 
 
 class Job:
-    def __init__(self, job_id: str, udid: str, kind: str = "BACKUP", backup_id: int | None = None):
+    def __init__(self, job_id: str, udid: str, kind: str = "BACKUP", backup_id: int | None = None,
+                 source_udid: str | None = None, env: dict | None = None):
         self.id = job_id
-        self.udid = udid
+        self.udid = udid                      # 目标设备（备份：被备份的；恢复：被写入的）
         self.kind = kind                      # BACKUP | RESTORE
         self.backup_id = backup_id
+        # 恢复时读谁的备份目录；同机恢复与备份时等于 udid
+        self.source_udid = source_udid or udid
+        # 只用于传备份密码，绝不写进日志
+        self._env = env
         self.subscribers: list[asyncio.Queue] = []
         self.status = "RUNNING"               # RUNNING | DONE | FAILED | CANCELED
         self.progress = 0
@@ -319,9 +331,12 @@ class Job:
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 *args,
+                # 缺密码时 idevicebackup2 会尝试从终端读，容器里没有 TTY 会一直挂着
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 limit=STREAM_LIMIT,
+                env={**os.environ, **self._env} if self._env else None,
             )
         except FileNotFoundError as e:
             raise RuntimeError(f"找不到 {args[0]}：{e}") from e
@@ -416,6 +431,10 @@ class Job:
             # last_backup_at 只在真正成功时更新：失败的任务不能让设备卡片
             # 显示「今天已备份」——那是健康状态里最容易被误读的字段。
             store.touch_last_backup(self.udid)
+            # 加密状态以刚写完的这份备份为准：用户可能在 Finder 里改过开关
+            meta = backup_meta(self.udid)
+            if meta.get("encrypted") is not None:
+                store.set_device_encrypted(self.udid, meta["encrypted"])
             size = await _dir_size(dev_dir)
             self._close_backup("COMPLETE", size_bytes=size, backup_type=backup_type)
             self._finish("DONE", progress=100, size=size, backup_id=self.backup_id)
@@ -444,6 +463,50 @@ def _disk_free_bytes(path: str) -> int:
         return -1
 
 
+_meta_cache: dict[str, tuple[tuple, dict]] = {}
+
+
+def backup_meta(udid: str) -> dict:
+    """读磁盘上某台设备的备份目录：是否加密、来自哪个 iOS 版本、设备名。
+
+    以文件为准而不是数据库：加密是写在 Manifest.plist 里的事实，恢复时
+    idevicebackup2 也是看它决定要不要密码。Info.plist 可能有几 MB（含 App 图标），
+    按 mtime 缓存，页面轮询不会每次都重新解析。目录或文件不存在时返回 {}。
+    """
+    base = os.path.join(config.BACKUP_DIR, udid)
+    manifest, info = os.path.join(base, "Manifest.plist"), os.path.join(base, "Info.plist")
+    try:
+        key = (os.path.getmtime(manifest), os.path.getmtime(info))
+    except OSError:
+        return {}
+    hit = _meta_cache.get(udid)
+    if hit and hit[0] == key:
+        return hit[1]
+    meta: dict = {}
+    try:
+        with open(manifest, "rb") as f:
+            meta["encrypted"] = bool(plistlib.load(f).get("IsEncrypted", False))
+        with open(info, "rb") as f:
+            p = plistlib.load(f)
+        meta["ios_version"] = str(p.get("Product Version") or "")
+        meta["device_name"] = str(p.get("Device Name") or p.get("Display Name") or "")
+        meta["product_type"] = str(p.get("Product Type") or "")
+    except Exception as e:  # noqa: BLE001  损坏的 plist 不能把列表接口拖垮
+        log.warning("读取备份元数据失败 %s：%s", base, e)
+        return {}
+    _meta_cache[udid] = (key, meta)
+    return meta
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    """'17.6.1' → (17, 6, 1)；解析不了的段按 0 处理。"""
+    out = []
+    for part in (v or "").split("."):
+        m = re.match(r"\d+", part)
+        out.append(int(m.group()) if m else 0)
+    return tuple(out)
+
+
 async def _dir_size(path: str) -> int:
     """du -sb 的纯 Python 实现（备份目录可能很大，在线程池里算）。"""
     def _walk() -> int:
@@ -465,14 +528,39 @@ def get_job(job_id: str) -> Job | None:
 
 
 def busy_job(udid: str) -> Job | None:
-    """某台设备当前占用者；没有则 None。"""
-    return next((j for j in _jobs.values() if j.udid == udid), None)
+    """某台设备当前占用者；没有则 None。
+
+    恢复任务同时占用目标与来源：来源的备份目录正在被读，这时再对来源设备
+    跑一次备份，会让目标设备恢复到一份写了一半的数据。
+    """
+    return next((j for j in _jobs.values() if udid in (j.udid, j.source_udid)), None)
+
+
+# 不登记为 Job 的短时独占操作（开关备份加密）：它们不需要进度和日志，
+# 但同样不能和备份/恢复并发，否则加密状态会在一次备份中途改变。
+_locked: set[str] = set()
+
+
+class device_lock:
+    """短时独占一台设备；与 Job 共用同一套忙闲判定。用法：`with device_lock(udid): ...`"""
+
+    def __init__(self, udid: str):
+        self.udid = udid
+
+    def __enter__(self):
+        _claim(self.udid)
+        _locked.add(self.udid)
+        return self
+
+    def __exit__(self, *exc):
+        _locked.discard(self.udid)
+        return False
 
 
 def active_jobs() -> list[dict]:
     return [
-        {"id": j.id, "udid": j.udid, "kind": j.kind, "status": j.status,
-         "progress": j.progress, "phase": j.phase, "started_at": j.started_at}
+        {"id": j.id, "udid": j.udid, "source_udid": j.source_udid, "kind": j.kind,
+         "status": j.status, "progress": j.progress, "phase": j.phase, "started_at": j.started_at}
         for j in _jobs.values() if j.status == "RUNNING"
     ]
 
@@ -483,9 +571,11 @@ def _claim(udid: str) -> None:
     检查与登记之间不能有 await，否则两个并发请求会双双通过检查；
     调用方（HTTP 端点、调度器）只需接住 DeviceBusy。
     """
+    if udid in _locked:
+        raise DeviceBusy(None, udid, "该设备正在修改备份加密设置，请稍后再试")
     busy = busy_job(udid)
     if busy is not None:
-        raise DeviceBusy(busy)
+        raise DeviceBusy(busy, udid)
 
 
 def _register(job: Job) -> Job:
@@ -514,14 +604,19 @@ def start_backup(udid: str, job_id: str) -> Job:
     return job
 
 
-def start_restore(udid: str, job_id: str, source_udid: str | None = None):
-    """恢复最近一次成功完成的备份到当前设备。
+def start_restore(udid: str, job_id: str, source_udid: str | None = None,
+                  password: str | None = None):
+    """把 source_udid 的备份恢复到 udid（不给 source_udid 即同机恢复）。
 
-    注意：增量备份依赖基线目录，idevicebackup2 restore 直接指向备份根目录
-    即可由其内部链接解析完整数据。
+    换机就是 source ≠ udid：idevicebackup2 的 -s 指定读哪台设备的备份目录。
+    备份密码只经环境变量交给子进程，不进命令行、不进日志、不落库。
     """
+    source = source_udid or udid
     _claim(udid)
-    job = Job(job_id, udid, kind="RESTORE")
+    if source != udid:
+        _claim(source)
+    job = Job(job_id, udid, kind="RESTORE", source_udid=source,
+              env={"BACKUP_PASSWORD": password} if password else None)
     _register(job)
     job.task = asyncio.create_task(_run_restore(job))
     job.task.add_done_callback(lambda t: _on_done(job, t))
@@ -541,27 +636,44 @@ async def _run_restore(job: "Job"):
 
 
 async def _run_restore_inner(job: "Job"):
+    src = ["-s", job.source_udid] if job.source_udid != job.udid else []
+    if src:
+        job.add_log(f"换机恢复：读取 ····{job.source_udid[-6:]} 的备份，写入 ····{job.udid[-6:]}")
+    if job._env:
+        job.add_log("备份已加密，密码已通过环境变量提供（不记录）")
+    # --remove：删掉设备上备份里没有的项目，恢复后手机回到备份时的状态（与 Finder 一致）。
+    # 不加的话备份之后新增的文件可能留在手机上，结果接近「合并」，和界面上
+    # 「手机会回到备份时的状态」的说明对不上。尚未在真机上验证。
     rc = await job._pump([
-        config.BIN_IDEVICEBACKUP2, *device.net_args(job.udid), "-u", job.udid,
-        "restore", "--system", "--settings", config.BACKUP_DIR,
+        config.BIN_IDEVICEBACKUP2, *device.net_args(job.udid), "-u", job.udid, *src,
+        "restore", "--system", "--settings", "--remove", config.BACKUP_DIR,
     ])
     if job._cancel_requested or job.status == "CANCELED":
         job._finish("CANCELED")
     elif rc == 0:
         job._finish("DONE", progress=100)
     else:
-        err = f"restore 退出码 {rc}"
-        # 「查找我的 iPhone」是恢复最常见的失败原因，但 idevicebackup2.c 里
-        # 并没有 "Find My" 字样，能否命中取决于设备返回的错误描述，属尽力识别。
-        # 设备端错误统一带 MBErrorDomain 前缀，但该域覆盖所有备份域错误，
-        # 只能作为软提示；具体哪个错误码对应未关「查找」，需在真机上
-        # 开着「查找」实测一次恢复，从日志确认后再收紧判断。
-        tail = "\n".join(job.log_tail[-40:])
-        if re.search(r"find\s*my|查找", tail, re.I):
-            err += ("：检测到「查找我的 iPhone」相关报错。"
-                    "请先在手机上关闭「查找」（设置 → Apple 账户 → 查找），恢复完成后再打开，然后重试")
-        elif re.search(r"MBErrorDomain", tail):
-            err += ("：设备端返回了备份域错误（MBErrorDomain）。"
-                    "常见原因是未关闭「查找我的 iPhone」，请先关闭再重试；"
-                    "若仍失败，可查看本条记录日志中的完整设备报错")
-        job._finish("FAILED", error=err)
+        job._finish("FAILED", error=_restore_error(rc, "\n".join(job.log_tail[-40:]),
+                                                   password_provided=bool(job._env)))
+
+
+def _restore_error(rc: int, tail: str, password_provided: bool) -> str:
+    """把恢复失败的退出码和输出尾部翻译成一句能照着做的话。
+
+    「查找」与密码错误两类提示都是尽力识别：设备端返回的具体错误码还没在
+    真机上确认过（idevicebackup2.c 里没有 "Find My" 字样，设备错误统一带
+    MBErrorDomain 前缀但该域覆盖所有备份错误）。真机实测拿到日志后再收紧。
+    """
+    if re.search(r"password is required", tail, re.I):
+        return f"restore 退出码 {rc}：这份备份已加密，需要输入备份密码"
+    hints = []
+    if re.search(r"find\s*my|查找", tail, re.I):
+        hints.append("检测到「查找我的 iPhone」相关报错，请先在手机上关闭「查找」"
+                     "（设置 → Apple 账户 → 查找），恢复完成后再打开")
+    elif re.search(r"MBErrorDomain", tail):
+        hints.append("设备端返回了备份域错误（MBErrorDomain），常见原因是未关闭「查找我的 iPhone」")
+    if password_provided:
+        hints.append("这份备份已加密，密码不正确也会导致恢复失败，请核对")
+    if not hints:
+        return f"restore 退出码 {rc}，可查看本条任务日志中的完整设备报错"
+    return f"restore 退出码 {rc}：" + "；".join(hints)

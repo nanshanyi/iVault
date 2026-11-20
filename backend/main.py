@@ -75,7 +75,8 @@ app = FastAPI(title="iVault", version=VERSION,
 # 前端每 6 秒刷一轮状态，一次 4 个请求 —— 开着 uvicorn 的 access log 时，
 # 一天五万多条轮询记录会把真正的报错彻底淹掉。entrypoint 里已加 --no-access-log，
 # 改由这里只记「值得看」的请求：出错、写操作、异常慢的。
-_QUIET_GET = ("/api/status", "/api/devices", "/api/backups", "/api/settings", "/api/jobs/active")
+_QUIET_GET = ("/api/status", "/api/devices", "/api/backups", "/api/settings", "/api/jobs/active",
+              "/api/restore/sources")
 
 
 @app.middleware("http")
@@ -347,6 +348,7 @@ async def devices():
         d["connection"] = conn or "offline"      # usb / network / offline
         snaps = store.list_backups(d["udid"], limit=500)
         completed = [s for s in snaps if s["status"] == "COMPLETE"]
+        d["encrypted"] = bool(d.get("encrypted"))
         d["backup_count"] = len(completed)
         # 占用只能取最近一次成功备份的统计：单目录覆盖模式下每条记录的
         # size_bytes 都是整个备份目录的大小（增量也写同一目录），
@@ -459,16 +461,53 @@ async def trigger_backup(body: dict):
     return {"job_id": job.id, "backup_id": job.backup_id}
 
 
+@app.get("/api/restore/sources")
+async def restore_sources():
+    """可以拿来恢复的备份：每台设备（含已取消配对的旧手机）最新一份成功备份。
+
+    换机时旧手机常常已经取消配对，但它的备份还在磁盘上，必须能选到。
+    只列磁盘上真的有完整备份目录的（Manifest.plist + Info.plist 都在）。
+    """
+    paired = {d["udid"]: d for d in store.list_devices()}
+    out = []
+    for b in store.latest_complete_backups():
+        meta = jobs.backup_meta(b["udid"])
+        if not meta:
+            continue
+        d = paired.get(b["udid"])
+        out.append({
+            "udid": b["udid"],
+            "name": (d or {}).get("name") or meta.get("device_name") or "…" + b["udid"][-6:],
+            "paired": d is not None,
+            "encrypted": meta.get("encrypted", False),
+            "ios_version": meta.get("ios_version", ""),
+            "product_type": meta.get("product_type", ""),
+            "finished_at": b["finished_at"] or b["started_at"],
+            "size_bytes": b["size_bytes"],
+        })
+    return out
+
+
 @app.post("/api/restore")
 async def trigger_restore(body: dict):
+    """把 source_udid 的备份恢复到 udid；不给 source_udid 即恢复到自己（同机恢复）。"""
     udid = body.get("udid")
     if not udid:
         raise HTTPException(400, "缺少 udid")
+    source = str(body.get("source_udid") or udid)
+    password = str(body.get("password") or "")
     # 前置检查放在启动任务之前：恢复是少数会覆盖设备数据的操作，
     # 让失败发生在请求阶段、带着明确原因返回，而不是起一个注定失败的任务。
+    if not store.get_device(udid):
+        raise HTTPException(409, "目标设备还没有配对：新手机请先在「设备管理」里添加设备")
     if not any(s["status"] == "COMPLETE"
-               for s in store.list_backups(udid, limit=500)):
+               for s in store.list_backups(source, limit=500)):
         raise HTTPException(409, "还没有可恢复的成功备份，请先完成一次备份")
+    meta = jobs.backup_meta(source)
+    if not meta:
+        raise HTTPException(409, "磁盘上找不到这份备份的完整目录（缺少 Manifest.plist 或 Info.plist）")
+    if meta.get("encrypted") and not password:
+        raise HTTPException(400, "这份备份已加密，需要输入备份密码")
     try:
         await _refresh_transports()
     except Exception as e:  # noqa: BLE001
@@ -476,12 +515,56 @@ async def trigger_restore(body: dict):
     if udid not in _state["online_devices"]:
         raise HTTPException(409, "设备当前不在线：恢复需要把手机插到 NAS 的 USB 口，"
                                  "或确保无线可达且手机已解锁")
-    # 恢复同样是设备级独占操作：备份正在写同一个目录时恢复会读到半成品
+    # iOS 不允许把新系统的备份恢复到旧系统上，这一步必然失败，提前拦下并说清楚。
+    # 目标版本现查一次：库里的 ios_version 是配对时记的，手机升级后会过期。
+    src_ver = meta.get("ios_version", "")
+    info = await device.device_info(udid)
+    dst_ver = info.get("ProductVersion") or (store.get_device(udid) or {}).get("ios_version") or ""
+    if src_ver and dst_ver and jobs.version_tuple(src_ver) > jobs.version_tuple(dst_ver):
+        raise HTTPException(409, f"这份备份来自 iOS {src_ver}，目标手机是 iOS {dst_ver}。"
+                                 f"请先把目标手机升级到 iOS {src_ver} 或更高版本再恢复")
+    # 恢复同时占用目标与来源设备：来源的备份目录在被读，不能同时被备份改写
     try:
-        job = jobs.start_restore(udid, job_id=uuid.uuid4().hex)
+        job = jobs.start_restore(udid, job_id=uuid.uuid4().hex,
+                                 source_udid=source, password=password or None)
     except jobs.DeviceBusy as e:
         raise HTTPException(409, str(e)) from e
     return {"job_id": job.id}
+
+
+@app.post("/api/devices/{udid}/encryption")
+async def set_encryption(udid: str, body: dict):
+    """开启或关闭备份加密。
+
+    加密是 iPhone 上的开关：开启后之后的每一份备份都由设备加密，备份时不需要密码；
+    恢复和关闭时才需要。密码不保存在 NAS 上，只在这一次请求里经环境变量交给工具。
+    """
+    enable = bool(body.get("enable"))
+    password = str(body.get("password") or "")
+    if not password:
+        raise HTTPException(400, "请输入备份密码")
+    if len(password) > 128:
+        raise HTTPException(400, "密码太长")
+    if not store.get_device(udid):
+        raise HTTPException(404, "设备不存在")
+    try:
+        await _refresh_transports()
+    except Exception as e:  # noqa: BLE001
+        log.warning("修改加密前刷新设备失败：%s", e)
+    if udid not in _state["online_devices"]:
+        raise HTTPException(409, "设备当前不在线：请插上数据线并解锁手机")
+    try:
+        with jobs.device_lock(udid):
+            ok, msg = await device.set_encryption(udid, enable, password)
+            state = await device.will_encrypt(udid)
+    except jobs.DeviceBusy as e:
+        raise HTTPException(409, str(e)) from e
+    if state is not None:
+        store.set_device_encrypted(udid, state)
+    if not ok:
+        log.warning("修改备份加密失败 %s：%s", udid, msg)
+        raise HTTPException(409, msg)
+    return {"ok": True, "encrypted": state if state is not None else enable, "message": msg}
 
 
 @app.get("/api/jobs/active")

@@ -16,6 +16,14 @@ try {
   var _sc = localStorage.getItem('ivault-side');
   if (innerWidth > 640 && (_sc === '1' || (_sc === null && innerWidth <= 1000))) document.documentElement.classList.add('side-collapsed');
 } catch (e) {}
+/* 上次停留的页面，同样尽早写给 <html>：等到 app.js 执行再切，
+   首帧会先画出总览再跳走，看起来就是「闪一下」。
+   这里只认白名单里的值，页面被删掉后残留的旧值不会让 CSS 指向不存在的元素 */
+try {
+  var _v = localStorage.getItem('ivault-view');
+  if (_v && _v !== 'dashboard' && ['devices', 'tasks', 'settings'].indexOf(_v) > -1)
+    document.documentElement.setAttribute('data-view', _v);
+} catch (e) {}
 </script>
 <style>
 :root{
@@ -155,7 +163,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .nav-item span{min-width:0;white-space:nowrap;overflow:hidden}
 .nav-item svg{width:17px;height:17px;flex-shrink:0;opacity:.85}
 .nav-item:hover{background:var(--card);color:var(--txt)}
-.nav-item.active{background:var(--green-dim);color:var(--green2);border-color:rgba(0,196,127,.22);font-weight:600}
+/* .active 由 JS 维护；下面几条让首帧也能高亮正确的那一项（见 <html data-view>）。
+   HTML 里不再写死 .active，所以「没有 data-view」时要自己补上总览这一项 */
+.nav-item.active,
+html:not([data-view]) .nav-item[data-v="dashboard"],
+html[data-view="dashboard"] .nav-item[data-v="dashboard"],
+html[data-view="devices"] .nav-item[data-v="devices"],
+html[data-view="tasks"] .nav-item[data-v="tasks"],
+html[data-view="settings"] .nav-item[data-v="settings"]{background:var(--green-dim);color:var(--green2);border-color:rgba(0,196,127,.22);font-weight:600}
 .nav-badge{margin-left:auto;background:var(--green);color:#04231a;font-size:10px;font-weight:700;
   padding:2px 7px;border-radius:99px}
 .side-foot{border-top:1px solid var(--stroke);padding:14px 10px 4px;font-size:11px;color:var(--txt3);
@@ -170,6 +185,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .main{flex:1;padding:28px 34px 60px; max-width:1180px; min-width:0}
 .view{display:none;animation:fadein .3s ease}
 .view.active{display:block}
+/* 首屏显示哪一页只看 <html data-view>：没有该属性 = 首次访问，默认总览。
+   HTML 里不写死 active —— 写死的话 app.js 执行前总览会先亮一下再被切走，
+   也就是「刷新时闪一下」。go() 会同步这个属性 */
+html:not([data-view]) #view-dashboard,
+html[data-view="dashboard"] #view-dashboard,
+html[data-view="devices"] #view-devices,
+html[data-view="tasks"] #view-tasks,
+html[data-view="settings"] #view-settings{display:block}
 @keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
 .page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:24px}
@@ -431,6 +454,20 @@ td b{color:var(--txt);font-weight:600}
   padding:10px 14px;color:var(--txt);font-size:14px;outline:none;text-align:center;letter-spacing:.5px}
 .auth-input:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--green-dim)}
 
+/* ===== 表单浮层（恢复 / 备份加密） ===== */
+.dlg-body{margin-top:18px;display:flex;flex-direction:column;gap:14px;font-size:13px;color:var(--txt2)}
+.dlg-body .k{display:block;font-size:11.5px;color:var(--txt3);margin-bottom:6px}
+.dlg-row span:last-child{color:var(--txt);overflow-wrap:anywhere}
+.dlg-field{display:block}
+.dlg-input{width:100%;background:var(--input-bg);border:1px solid var(--stroke);border-radius:10px;
+  padding:10px 12px;color:var(--txt);font-size:14px;outline:none;font-family:inherit;color-scheme:var(--cs)}
+.dlg-input:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--green-dim)}
+.dlg-note{margin:0;padding-left:18px;font-size:12px;line-height:1.85;color:var(--txt3)}
+.dlg-note b{color:var(--txt2)}
+.dlg-note.warn{padding:10px 12px;border-radius:10px;background:rgba(245,177,61,.1);color:var(--amber);list-style:none}
+.dlg-note.warn b{color:inherit}
+.log-btn:disabled{opacity:.4;cursor:not-allowed}
+
 /* ===== toast ===== */
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;
   background:var(--toast-bg);border:1px solid rgba(0,196,127,.4);color:var(--green2);
@@ -512,7 +549,7 @@ td b{color:var(--txt);font-weight:600}
   /* —— 设置 —— */
   /* iOS Safari：输入框字号小于 16px 时，一获得焦点就会放大整页，输完还得手动缩回。
      手机上统一抬到 16px，视觉差别很小，交互差别很大 */
-  #whInput,#timeInput,.auth-input{font-size:16px}
+  #whInput,#timeInput,.auth-input,.dlg-input{font-size:16px}
   .set-row{flex-direction:column;align-items:stretch;gap:10px}
   .set-row .btn{align-self:flex-start}
   .set-row .seg{width:100%}
@@ -577,7 +614,7 @@ td b{color:var(--txt);font-weight:600}
     <div><h1>i<em>Vault</em></h1><span>iPhone 备份中心</span></div>
   </div>
   <nav class="nav">
-    <div class="nav-item active" data-v="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg><span>总览</span></div>
+    <div class="nav-item" data-v="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg><span>总览</span></div>
     <div class="nav-item" data-v="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg><span>设备管理</span></div>
     <div class="nav-item" data-v="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V3.2"/><path d="M7.4 7.6 12 3l4.6 4.6"/><path d="M4.6 16.2v2.4A2.4 2.4 0 0 0 7 21h10a2.4 2.4 0 0 0 2.4-2.4v-2.4"/></svg><span>备份任务</span><em class="nav-badge" id="navJobBadge" style="display:none">1</em></div>
     <div class="nav-item" data-v="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>设置</span></div>
@@ -593,7 +630,7 @@ td b{color:var(--txt);font-weight:600}
 <main class="main">
 
 <!-- 总览 -->
-<section class="view active" id="view-dashboard">
+<section class="view" id="view-dashboard">
   <div class="page-head">
     <div><h2>总览</h2><p id="dashHello">一切备份运转正常</p></div>
     <button class="btn primary" id="dashAction" onclick="quickBackup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14m-7-7h14"/></svg>立即备份</button>
@@ -823,6 +860,21 @@ td b{color:var(--txt);font-weight:600}
       <button class="btn" onclick="copyBackupLog(this)">复制日志</button>
     </div>
     <button class="wiz-close" onclick="closeLog()" title="关闭（Esc）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+</div>
+<!-- 通用表单浮层：恢复（选目标设备、输备份密码）与备份加密开关共用 -->
+<div class="wiz-overlay" id="dlgOverlay" style="display:none">
+  <div class="card wizard" role="dialog" aria-modal="true" aria-labelledby="dlgTitle" style="max-width:480px">
+    <b style="font-size:15px;display:block;padding-right:36px" id="dlgTitle"></b>
+    <div class="dlg-body" id="dlgBody"></div>
+    <p id="dlgErr" style="color:var(--red);font-size:12.5px;display:none;margin-top:12px;line-height:1.6"></p>
+    <div class="wiz-actions" style="justify-content:flex-end">
+      <button class="btn ghost" onclick="closeDlg()">取消</button>
+      <button class="btn primary" id="dlgOk" onclick="dlgSubmit()">确定</button>
+    </div>
+    <button class="wiz-close" onclick="closeDlg()" title="关闭（Esc）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>

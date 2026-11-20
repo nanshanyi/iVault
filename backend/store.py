@@ -58,14 +58,18 @@ def init_db():
 
 # ---------- devices ----------
 
-def upsert_device(udid: str, name="", model="", ios_version="", encrypted=False):
+def upsert_device(udid: str, name="", model="", ios_version="", encrypted: bool | None = None):
+    """encrypted=None 表示查不到：新设备按未开启入库，已有设备保留原值，
+    不把「不知道」写成「未开启」。"""
+    enc = None if encrypted is None else int(bool(encrypted))
     conn().execute(
         """INSERT INTO devices (udid, name, model, ios_version, encrypted, paired_at)
-           VALUES (?,?,?,?,?,?)
+           VALUES (?,?,?,?,COALESCE(?,0),?)
            ON CONFLICT(udid) DO UPDATE SET
              name=excluded.name, model=excluded.model,
-             ios_version=excluded.ios_version, encrypted=excluded.encrypted""",
-        (udid, name, model, ios_version, int(bool(encrypted)), int(time.time())),
+             ios_version=excluded.ios_version,
+             encrypted=COALESCE(?, devices.encrypted)""",
+        (udid, name, model, ios_version, enc, int(time.time()), enc),
     )
     conn().commit()
 
@@ -75,6 +79,27 @@ def touch_last_backup(udid: str):
         "UPDATE devices SET last_backup_at=? WHERE udid=?", (int(time.time()), udid)
     )
     conn().commit()
+
+
+def set_device_encrypted(udid: str, encrypted: bool):
+    conn().execute("UPDATE devices SET encrypted=? WHERE udid=?", (int(bool(encrypted)), udid))
+    conn().commit()
+
+
+def latest_complete_backups() -> list[dict]:
+    """每台设备（含已取消配对的）最近一次成功备份，按完成时间倒序。
+
+    换机时旧手机往往已经取消配对，但它的备份目录和记录都还在，
+    恢复来源不能只从当前设备列表里找。
+    """
+    rows = conn().execute(
+        """SELECT b.udid, b.id, b.started_at, b.finished_at, b.size_bytes
+           FROM backups b
+           JOIN (SELECT udid, MAX(id) AS mid FROM backups
+                 WHERE status='COMPLETE' GROUP BY udid) t ON b.id = t.mid
+           ORDER BY b.finished_at DESC, b.id DESC"""
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def remove_device(udid: str):

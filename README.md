@@ -70,6 +70,8 @@ docker compose pull && docker compose up -d --no-build
 | 全量 / 增量整机备份 | Apple MobileSync 格式，目录可直接拷到 Mac 用 Finder 恢复 |
 | 实时进度 | SSE 推送进度环、速率与终端日志，断线重连不丢状态 |
 | 备份任务 | 「当前可恢复」按设备列出最新一份可恢复备份（恢复入口在这里）；「任务台账」记录每次任务（含失败与取消）与完整日志 |
+| 换机恢复 | 把一台设备的备份恢复到另一台已配对的设备；旧手机取消配对后，它的备份仍可选作来源 |
+| 备份加密 | 在设备卡片上开启/关闭 iPhone 的备份加密；恢复加密备份时输入密码，密码不保存在 NAS 上 |
 | 定时备份 | 每天自选时刻，服务端调度 |
 | Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
 | 访问密码 | `IVAULT_PASSWORD` 启用登录鉴权，HttpOnly Cookie 会话，SSE 同套保护 |
@@ -183,7 +185,9 @@ docker compose up -d     # 重启生效
 - iVault 的 Web 走**明文 HTTP**。内网直接访问没有问题；需要从外网访问时，请使用 Tailscale / WireGuard 这类隧道组网，或 NAS 自带的反向代理套 HTTPS——**不要把 8666 端口直接映射到公网**
 - 未设置该变量时服务无鉴权（旧行为），仅适合完全可信的内网环境
 
-恢复功能自带两道前置检查：设备必须在线、必须已有成功备份；若手机没关「查找我的 iPhone」，失败原因里会直接给出解决办法。
+恢复功能的前置检查：目标设备必须已配对且在线；来源必须有成功备份；加密备份必须提供密码；备份的 iOS 版本不能高于目标手机。若手机没关「查找我的 iPhone」，失败原因里会给出解决办法。
+
+备份密码只在当次请求里经环境变量 `BACKUP_PASSWORD` 交给 `idevicebackup2`，不进命令行、不写日志、不落库。
 
 ## HTTP API
 
@@ -196,6 +200,7 @@ POST   /api/logout                 退出登录
 GET    /api/status                 服务状态 / 在线设备 / 磁盘剩余
 GET    /api/devices                已配对设备（含在线状态、备份统计）
 DELETE /api/devices/{udid}         取消配对
+POST   /api/devices/{udid}/encryption  {enable, password} 开启/关闭备份加密
 POST   /api/pair/begin             开始配对向导
 GET    /api/pair/{sid}/events      SSE：waiting → found → pairing → done / error
 POST   /api/backups                {udid} 触发备份
@@ -204,7 +209,8 @@ POST   /api/jobs/{id}/cancel       取消任务
 GET    /api/backups                备份记录列表（含 has_log / error）
 GET    /api/backups/{id}/log       某次任务的完整日志（事后排查）
 DELETE /api/backups/{id}           删除备份记录
-POST   /api/restore                {udid} 恢复最近一份成功备份
+GET    /api/restore/sources        可恢复的备份来源（含已取消配对的设备）
+POST   /api/restore                {udid, source_udid?, password?} 恢复；source_udid 不同于 udid 即换机
 GET/PUT /api/settings              定时、Webhook
 GET    /api/diagnostics            版本 / 系统 / 设备 / 最近告警，纯文本一键复制
 GET    /api/docs                   Swagger 文档
@@ -325,7 +331,8 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 ## 已知限制
 
 1. **备份是单目录覆盖模式，没有快照机制**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，新备份覆写旧状态，磁盘上只有「最新一次可恢复状态」，不能回滚到历史时间点。「备份任务」页的任务台账记录每一次任务（含失败与取消），删记录不会释放空间。中途失败的增量备份可能让这份唯一状态处于不一致，需重新跑一次成功备份修复。
-2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在 iPhone 侧开启加密备份并牢记密码——密码不会写到 NAS 上。
+2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在设备卡片上开启备份加密并牢记密码——密码不会写到 NAS 上，忘记密码就无法恢复加密备份，只能在手机上「还原所有设置」清除它。换机前尤其建议开启。
+   **恢复（含换机恢复）与加密开关尚未在真机上完整验证**，首次使用请用备用机测试。
 3. **无线备份的两个硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次。
 4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`——且必须用 `volumes:` 做 bind mount，写 `devices:` 会让热插拔失效（见「出问题怎么查」）。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
 5. **验证状态**：配对链路已在真机验证（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21），含「未弹窗需拔插线」的排障路径；容器 USB 透传与热插拔看护已在 DXP4800 + iPhone 15 / iOS 27.3 实测（拔线重插后约 1 秒自动恢复在线）；无线通道的命令层已在 macOS 实测（`-n` 发现、探活、失效条目过滤），容器内 mDNS 发现（`[netmuxd] Adding network device`）也已实测。**`idevicebackup2` 落盘尚未实机联调**，其他 NAS 平台也未实机测试。

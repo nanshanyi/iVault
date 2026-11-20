@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -14,13 +15,20 @@ from . import config
 log = logging.getLogger("ivault.device")
 
 
-async def _run(args: list[str], timeout=30) -> tuple[int, str]:
-    """执行一条 idevice 命令，返回 (returncode, 合并输出)。"""
+async def _run(args: list[str], timeout=30, env: dict | None = None) -> tuple[int, str]:
+    """执行一条 idevice 命令，返回 (returncode, 合并输出)。
+
+    env 只用来传备份密码（BACKUP_PASSWORD / BACKUP_PASSWORD_NEW）：放命令行参数里
+    会出现在 ps 和任务日志中。stdin 固定接 /dev/null：idevicebackup2 缺密码时会
+    尝试从终端读，没有 TTY 的容器里那一步会一直挂着。
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env={**os.environ, **env} if env else None,
             # 配对记录由 usbmuxd 的 --config-dir 决定（见 scripts/entrypoint.sh），
             # 不通过环境变量覆盖——libimobiledevice 工具链不识别这类变量。
         )
@@ -172,6 +180,53 @@ async def battery_info(udid: str, ttl: float = 15.0) -> dict | None:
         data = None
     _battery_cache[udid] = (now, data or {})
     return data
+
+
+# ---------- 备份加密 ----------
+# 加密是 iPhone 上的一个开关，不是每次备份的选项：开启后设备自己加密每一份备份，
+# 备份时不需要密码；恢复加密备份、关闭加密时才需要。密码不保存在 NAS 上。
+
+async def will_encrypt(udid: str) -> bool | None:
+    """设备当前是否开启了备份加密（lockdown 的 WillEncrypt）。查不到返回 None。"""
+    code, out = await _run(
+        [config.BIN_IDEVICE_INFO, *net_args(udid), "-u", udid,
+         "-q", "com.apple.mobile.backup", "-k", "WillEncrypt"],
+        timeout=8,
+    )
+    if code != 0:
+        return None
+    v = out.strip().lower()
+    if v in ("true", "false"):
+        return v == "true"
+    return None
+
+
+async def set_encryption(udid: str, enable: bool, password: str) -> tuple[bool, str]:
+    """开启或关闭备份加密，返回 (是否成功, 给用户看的说明)。
+
+    iOS 13 起设备会要求在屏幕上输入锁屏密码确认，工具会一直等到用户确认或超时，
+    所以超时放得很宽。密码经环境变量传入：开启时是新密码，关闭时是当前密码。
+    """
+    var = "BACKUP_PASSWORD_NEW" if enable else "BACKUP_PASSWORD"
+    code, out = await _run(
+        [config.BIN_IDEVICEBACKUP2, *net_args(udid), "-u", udid,
+         "encryption", "on" if enable else "off"],
+        timeout=180, env={var: password},
+    )
+    low = out.lower()
+    if "successfully" in low:
+        return True, "已开启备份加密" if enable else "已关闭备份加密"
+    if "already enabled" in low:
+        return False, "这台设备已经开启了备份加密"
+    if "not enabled" in low:
+        return False, "这台设备没有开启备份加密"
+    if code == -1 and out.startswith("timeout"):
+        return False, "等待超时：请解锁手机，留意是否要求输入锁屏密码，然后重试"
+    if code in (126, 127):
+        return False, out.strip()
+    if not enable:
+        return False, "关闭失败：备份密码可能不正确。忘记密码的话，只能在手机上「还原所有设置」来清除它"
+    return False, "开启失败：请确认手机已解锁，并在手机上输入了锁屏密码"
 
 
 async def is_paired(udid: str) -> bool:
@@ -405,6 +460,7 @@ class PairSession:
             name=self.info.get("DeviceName", self.udid[-8:]),
             model=self.info.get("ProductType", ""),
             ios_version=self.info.get("ProductVersion", ""),
+            encrypted=await will_encrypt(self.udid),  # None = 查不到，不覆盖
         )
         self.stage = "done"
         self.broadcast({

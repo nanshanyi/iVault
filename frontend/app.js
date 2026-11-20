@@ -134,12 +134,16 @@ function go(v) {
   document.querySelectorAll('.view').forEach(e => e.classList.remove('active'));
   $('view-' + v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e => e.classList.toggle('active', e.dataset.v === v));
+  /* 首屏的 CSS 以 <html data-view> 为准，这里同步，否则样式表会把刚切到的页面继续藏起来 */
+  document.documentElement.setAttribute('data-view', v);
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  /* 记住当前页：刷新后回到原处，而不是每次都被踢回总览 */
+  try { localStorage.setItem('ivault-view', v); } catch (e) { /* 隐私模式下写不了，忽略 */ }
 }
 document.querySelectorAll('.nav-item').forEach(e => { e.onclick = () => go(e.dataset.v); });
 
 /* ---------- 全局状态 ---------- */
-let state = { devices: [], backups: [], status: {}, settings: {} };
+let state = { devices: [], backups: [], sources: [], status: {}, settings: {} };
 let pairSource = null, jobSource = null, jobStartedAt = 0, logCount = 0, jobTick = null;
 
 /* 终端日志的渲染节流。任务跑起来后 SSE 一秒能来几十条，以前是每条都
@@ -322,16 +326,16 @@ function renderDashboard() {
     const days = d.last_backup_at ? Math.floor((Date.now() / 1000 - d.last_backup_at) / 86400) : null;
     const conn = d.connection || (d.online ? 'usb' : 'offline');
     const live = conn !== 'offline';
-    const job = (state.status.active_jobs || []).find(j => j.udid === d.udid);
+    const { own: job, src: srcJob } = devJobs(d.udid);
     const pct = Math.max(0, Math.min(100, (job && job.progress) || 0));
     box.insertAdjacentHTML('beforeend',
       '<div class="dev-card" onclick="go(\'devices\')">' +
         '<div class="dev-ico"><svg viewBox="0 0 24 24" fill="none" stroke="' + (live ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
         '<div class="info" style="flex:1;min-width:0"><b>' + esc(d.name || '设备') + '</b>' +
-          (job ? '<span class="chip-run"><i></i>备份中</span>' : '') +
+          jobChip(job, srcJob) +
           '<div class="meta">' +
           esc(d.ios_version ? 'iOS ' + d.ios_version : '') + ' · UDID ····' + esc(d.udid.slice(-4)) +
-          ' · ' + (job ? esc(job.phase || '正在备份') : days == null ? '未备份过' : days === 0 ? '今天已备份' : days + ' 天未备份') + '</div>' +
+          ' · ' + (job ? esc(job.phase || '正在备份') : srcJob ? '正在用于恢复「' + esc(devName(srcJob.udid)) + '」' : days == null ? '未备份过' : days === 0 ? '今天已备份' : days + ' 天未备份') + '</div>' +
           /* 任务进行中：信息行下加一条进度（条 + 百分比），连接状态仍在右侧徽标里 */
           (job ? '<div class="dp-line"><div class="dp-mini" id="dpm-' + esc(d.udid) + '">' +
                    '<i style="width:' + pct + '%"></i></div>' +
@@ -356,6 +360,21 @@ function renderDashboard() {
   });
 }
 
+/* 设备上的任务：own 是以它为目标的任务（备份/恢复，带进度）；
+   src 是把它的备份拿去恢复另一台的任务——这时它本身也被占用（后端 busy_job 同样算忙），
+   不能备份、改加密或取消配对，卡片上要看得出来 */
+function devJobs(udid) {
+  const jobs = (state.status && state.status.active_jobs) || [];
+  const own = jobs.find(j => j.udid === udid) || null;
+  const src = own ? null : (jobs.find(j => j.source_udid === udid) || null);
+  return { own, src, busy: own || src };
+}
+function jobChip(own, src) {
+  if (own) return '<span class="chip-run"><i></i>' + (own.kind === 'RESTORE' ? '恢复中' : '备份中') + '</span>';
+  if (src) return '<span class="chip-run" title="这台设备的备份正在被用来恢复「' + esc(devName(src.udid)) + '」"><i></i>恢复来源</span>';
+  return '';
+}
+
 /* ---------- 设备管理 ---------- */
 const CONN_LABEL = { usb: 'USB 直连', network: '无线 Wi-Fi', offline: '未连接' };
 
@@ -363,7 +382,7 @@ function renderDevices() {
   const grid = $('devGrid');
   grid.innerHTML = '';
   state.devices.forEach(d => {
-    const job = (state.status.active_jobs || []).find(j => j.udid === d.udid);
+    const { own: job, src: srcJob, busy } = devJobs(d.udid);
     const conn = d.connection || (d.online ? 'usb' : 'offline');
     const live = conn !== 'offline';
     /* 徽标永远表示连接方式（Wi-Fi / USB / 离线）；「备份中」用名字旁的胶囊表达，
@@ -374,7 +393,7 @@ function renderDevices() {
         '<div style="padding:20px;display:flex;gap:15px;align-items:center">' +
           '<div class="dev-ico" style="width:52px;height:52px"><svg viewBox="0 0 24 24" fill="none" stroke="' + (live ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7" style="width:26px;height:26px"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
           '<div style="flex:1"><b style="font-size:15px">' + esc(d.name || '设备') + '</b>' +
-          (job ? '<span class="chip-run"><i></i>备份中</span>' : '') +
+          jobChip(job, srcJob) +
           '<div style="font-size:11.5px;color:var(--txt3);margin-top:4px">' + esc(d.model || '') + ' · iOS ' + esc(d.ios_version || '?') + '</div></div>' +
           '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' + badge + '</span>' +
         '</div>' +
@@ -386,6 +405,13 @@ function renderDevices() {
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">配对时间</span><span>' + fmtTs(d.paired_at) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">记录数 / 占用</span><span class="num">' + (d.backup_count || 0) + ' 条 · ' + fmtSize(d.total_bytes) + '</span></div>' +
+          /* 加密是设备侧开关：开着才备份密码、钥匙串、健康数据。修改要求设备在线且没有任务在跑 */
+          '<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--txt3)">备份加密</span>' +
+            '<span>' + (d.encrypted
+              ? '<span style="color:var(--green2)">已开启</span>'
+              : '<span title="未加密的备份不含密码、钥匙串、健康数据">未开启</span>') +
+            '<button class="log-btn"' + (live && !busy ? '' : ' disabled title="需要设备在线且没有进行中的任务"') +
+            ' onclick="toggleEncryption(\'' + esc(d.udid) + '\')">' + (d.encrypted ? '关闭' : '开启') + '</button></span></div>' +
         '</div>' +
         (live || !state.status.wifi_enabled ? '' :
           '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--txt3);line-height:1.75">' +
@@ -401,12 +427,12 @@ function renderDevices() {
             '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, job.progress || 0)) + '%"></i></div>' +
           '</div>' : '') +
         '<div class="dev-actions">' +
-          (job
+          (busy
             /* 任务跑着的时候再点「立即备份」只会撞上「设备忙」，直接给进度入口 */
-            ? '<button class="btn primary" style="flex:1;justify-content:center" onclick="go(\'tasks\')">查看进度</button>'
+            ? '<button class="btn primary" style="flex:1;justify-content:center" onclick="go(\'tasks\')">' + (srcJob ? '恢复进度' : '查看进度') + '</button>'
             : '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + esc(d.udid) + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>') +
           '<button class="btn" onclick="go(\'tasks\')">台账</button>' +
-          '<button class="btn danger"' + (job ? ' disabled title="任务进行中，取消配对会中断备份"' : '') + ' onclick="removeDevice(\'' + esc(d.udid) + '\')">取消配对</button>' +
+          '<button class="btn danger"' + (busy ? ' disabled title="任务进行中，取消配对会中断任务"' : '') + ' onclick="removeDevice(\'' + esc(d.udid) + '\')">取消配对</button>' +
         '</div></div>');
   });
   grid.insertAdjacentHTML('beforeend',
@@ -612,7 +638,7 @@ function closeWizard() {
 /* 两个浮层共用 body 滚动锁：都关掉才解锁，否则关一个会让另一个下面的页面滚起来 */
 function lockScroll() { document.body.style.overflow = 'hidden'; }
 function unlockScroll() {
-  const anyOpen = ['wizard', 'logOverlay'].some(id => {
+  const anyOpen = ['wizard', 'logOverlay', 'dlgOverlay'].some(id => {
     const el = $(id);
     return el && el.style.display !== 'none';
   });
@@ -625,6 +651,8 @@ function resetWizScroll() {
 /* Esc 关闭；点遮罩不关（配对进行中误触会中断会话） */
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
+  const dlg = $('dlgOverlay');
+  if (dlg && dlg.style.display !== 'none') { closeDlg(); return; }
   const logOv = $('logOverlay');
   if (logOv && logOv.style.display !== 'none') { closeLog(); return; }
   const ov = $('wizard');
@@ -938,47 +966,183 @@ function renderHistory() {
   });
 }
 
-/* 当前可恢复：每台设备只列最新一次成功备份，恢复入口只在这里 */
+/* 当前可恢复：每份备份来源一行（含已取消配对的旧手机，换机时要用它）。
+   恢复入口只在这里；点「恢复」后再选恢复到哪台设备 */
 function renderRestore() {
   const box = $('restoreList');
   if (!box) return;
-  const devs = state.devices || [];
-  const rows = devs.map(d => {
-    const ok = state.backups.find(s => s.udid === d.udid && s.status === 'COMPLETE');
-    return { d, ok };
-  });
-  if (!rows.length) {
-    box.innerHTML = '<div class="empty" style="padding:18px 0">还没有配对的设备</div>';
+  const srcs = state.sources || [];
+  if (!srcs.length) {
+    box.innerHTML = '<div class="empty" style="padding:18px 0">还没有可恢复的备份，完成一次备份后会出现在这里</div>';
     return;
   }
   box.innerHTML = '';
-  rows.forEach(r => {
-    const b = r.ok;
+  srcs.forEach(s => {
     box.insertAdjacentHTML('beforeend',
       '<div style="display:flex;align-items:center;gap:13px;padding:11px 0;border-top:1px solid var(--stroke)">' +
         '<div class="dev-ico" style="width:38px;height:38px"><svg viewBox="0 0 24 24" fill="none" stroke="' +
-          (b ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7" style="width:20px;height:20px">' +
+          (s.paired ? '#00e59b' : 'var(--txt3)') + '" stroke-width="1.7" style="width:20px;height:20px">' +
           '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></div>' +
-        '<div style="flex:1;min-width:0"><b style="font-size:13.5px">' + esc(r.d.name || '设备') + '</b>' +
+        '<div style="flex:1;min-width:0"><b style="font-size:13.5px">' + esc(s.name) + '</b>' +
+          (s.paired ? '' : '<span style="font-size:11px;color:var(--txt3);margin-left:7px">已取消配对</span>') +
           '<div style="font-size:11.5px;color:var(--txt3);margin-top:3px">' +
-            (b ? '最新成功备份：' + fmtTs(b.finished_at || b.started_at) + ' · ' + fmtSize(b.size_bytes)
-               : '还没有可恢复的备份') + '</div></div>' +
-        (b
-          ? '<button class="btn" style="flex:none" onclick="restoreBackup(\'' + esc(r.d.udid) + '\')">恢复</button>'
-          : '<span class="badge a">无备份</span>') +
+            fmtTs(s.finished_at) + ' · ' + fmtSize(s.size_bytes) +
+            (s.ios_version ? ' · iOS ' + esc(s.ios_version) : '') + ' · ' +
+            (s.encrypted ? '<span style="color:var(--green2)">已加密</span>' : '未加密') + '</div></div>' +
+        '<button class="btn" style="flex:none" onclick="restoreBackup(\'' + esc(s.udid) + '\')">恢复</button>' +
       '</div>');
   });
 }
-async function restoreBackup(udid) {
-  if (!confirm('将最近一次成功备份恢复到「' + devName(udid) + '」？\n\n' +
-    '· 恢复会覆盖设备当前数据，请先确认\n' +
-    '· 需先在手机上关闭「查找我的 iPhone」（设置 → Apple 账户 → 查找），否则恢复会失败\n' +
-    '· 恢复过程中请保持设备连接')) return;
+
+/* ---------- 通用表单浮层（恢复、备份加密共用） ---------- */
+let _dlgOk = null;
+function openDlg({ title, body, okText, danger }, onOk) {
+  $('dlgTitle').textContent = title;
+  $('dlgBody').innerHTML = body;
+  $('dlgErr').style.display = 'none';
+  const ok = $('dlgOk');
+  ok.textContent = okText || '确定';
+  ok.className = 'btn ' + (danger ? 'danger' : 'primary');
+  ok.disabled = false;
+  _dlgOk = onOk;
+  $('dlgOverlay').style.display = 'flex';
+  lockScroll();
+  setTimeout(() => { const i = $('dlgBody').querySelector('input,select'); if (i) i.focus(); }, 60);
+}
+function closeDlg() {
+  $('dlgOverlay').style.display = 'none';
+  $('dlgBody').innerHTML = '';     /* 密码不要留在 DOM 里 */
+  _dlgOk = null;
+  unlockScroll();
+}
+function dlgError(msg) {
+  const e = $('dlgErr');
+  e.textContent = msg;
+  e.style.display = 'block';
+}
+/* onOk 返回 false 或抛错时浮层保持打开，错误显示在按钮上方 */
+async function dlgSubmit() {
+  if (!_dlgOk) return;
+  const ok = $('dlgOk'), old = ok.textContent;
+  ok.disabled = true;
+  $('dlgErr').style.display = 'none';
   try {
-    const r = await api('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ udid }) });
+    const done = await _dlgOk(t => { ok.textContent = t; });
+    if (done !== false) closeDlg();
+  } catch (e) {
+    dlgError(e.message || String(e));
+  }
+  ok.disabled = false;
+  ok.textContent = old;
+}
+
+/* 恢复：source 是备份来源，目标默认是它自己（在线时；不在线则留空强制选择），也可以换成另一台已配对设备（换机） */
+function restoreBackup(sourceUdid) {
+  const src = (state.sources || []).find(s => s.udid === sourceUdid);
+  if (!src) { toast('找不到这份备份，请刷新页面'); return; }
+  const online = (state.devices || []).filter(d => d.online);
+  if (!online.length) {
+    toast('没有在线的设备：请把要恢复的手机插到 NAS 的 USB 口');
+    return;
+  }
+  /* 来源本机在线才默认选它；不在线就留空让用户自己选，避免默认值悄悄变成「换机」 */
+  const dflt = online.find(d => d.udid === src.udid) || null;
+  const opts = (dflt ? '' : '<option value="" selected disabled>请选择要恢复的手机</option>') + online.map(d =>
+    '<option value="' + esc(d.udid) + '"' + (dflt && d.udid === dflt.udid ? ' selected' : '') + '>' +
+      esc(d.name || '设备') + (d.ios_version ? '（iOS ' + esc(d.ios_version) + '）' : '') +
+      (d.udid === src.udid ? ' · 本机' : '') + '</option>').join('');
+  openDlg({
+    title: '从备份恢复',
+    okText: '开始恢复',
+    danger: true,
+    body:
+      '<div class="dlg-note warn"><b>恢复功能尚未经过真机验证，请谨慎使用。</b>' +
+        '建议先用备用机测试，或确认目标手机上没有需要保留的数据。</div>' +
+      '<div class="dlg-row"><span class="k">备份来源</span><span>' + esc(src.name) +
+        ' · ' + fmtTs(src.finished_at) + (src.ios_version ? ' · iOS ' + esc(src.ios_version) : '') + '</span></div>' +
+      '<label class="dlg-field"><span class="k">恢复到</span><select id="dlgTarget" class="dlg-input">' + opts + '</select></label>' +
+      (src.encrypted
+        ? '<label class="dlg-field"><span class="k">备份密码</span>' +
+          '<input type="password" id="dlgPw" class="dlg-input" autocomplete="off" placeholder="开启加密时设置的密码"' +
+          ' onkeydown="if(event.key===\'Enter\')dlgSubmit()"></label>'
+        : '') +
+      '<div id="dlgCross" class="dlg-note warn" style="display:none"></div>' +
+      '<ul class="dlg-note">' +
+        '<li>恢复会<b>覆盖</b>目标手机上的数据，手机会回到备份时的状态，之后新增的内容可能丢失</li>' +
+        '<li>请先在目标手机上关闭「查找」（设置 → Apple 账户 → 查找），否则恢复会失败</li>' +
+        '<li>建议插 USB 线进行：恢复完成后手机会重启，无线连接可能断开</li>' +
+      '</ul>'
+  }, async setBusy => {
+    const target = $('dlgTarget').value;
+    if (!target) throw new Error('请选择要恢复到哪台手机');
+    const pw = src.encrypted ? $('dlgPw').value : '';
+    if (src.encrypted && !pw) throw new Error('请输入备份密码');
+    const name = devName(target);
+    /* 一道确认讲清楚对象和风险（恢复尚未在真机验证过）；取消就回到浮层并给出提示 */
+    if (!confirm('确认把「' + src.name + '」的备份恢复到「' + name + '」？\n\n' +
+      '「' + name + '」上的全部数据会被覆盖，且无法撤销。\n\n' +
+      '⚠ 恢复功能尚未经过真机验证，请谨慎使用。建议先用备用机测试，' +
+      '或确认目标手机上没有需要保留的数据。')) { dlgError('已取消，未做任何改动'); return false; }
+    setBusy('启动中…');
+    const r = await api('/api/restore', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ udid: target, source_udid: src.udid, password: pw || undefined })
+    });
     toast('恢复任务已启动');
-    attachJob(r.job_id, udid, null, 'RESTORE');
-  } catch (e) { toast('恢复失败：' + e.message); }
+    attachJob(r.job_id, target, null, 'RESTORE');
+  });
+  /* 换机提示：目标不是来源本机时说明清楚；未加密备份换机会丢密码类数据 */
+  const syncCross = () => {
+    const t = $('dlgTarget').value, box = $('dlgCross');
+    if (!t || t === src.udid) { box.style.display = 'none'; return; }
+    box.innerHTML = '换机恢复：把「' + esc(src.name) + '」的备份写入「' + esc(devName(t)) + '」。' +
+      (src.encrypted ? '' : '这份备份<b>未加密</b>，不包含密码、钥匙串、健康数据和 Wi-Fi 配置，换机后这些需要重新设置。');
+    box.style.display = 'block';
+  };
+  $('dlgTarget').addEventListener('change', syncCross);
+  syncCross();
+}
+
+/* 备份加密：iPhone 上的开关。开启后每份备份都由设备加密，备份时不需要密码；
+   恢复和关闭时才需要。密码不保存在 NAS 上 */
+function toggleEncryption(udid) {
+  const d = (state.devices || []).find(x => x.udid === udid);
+  if (!d) return;
+  const enable = !d.encrypted;
+  const pwField = (id, label, ph, ac) =>
+    '<label class="dlg-field"><span class="k">' + label + '</span>' +
+    '<input type="password" id="' + id + '" class="dlg-input" autocomplete="' + ac + '" placeholder="' + ph + '"' +
+    ' onkeydown="if(event.key===\'Enter\')dlgSubmit()"></label>';
+  openDlg({
+    title: (enable ? '开启' : '关闭') + '备份加密 · ' + (d.name || '设备'),
+    okText: enable ? '开启加密' : '关闭加密',
+    danger: !enable,
+    body: enable
+      ? pwField('dlgPw', '设置备份密码', '恢复时需要这个密码', 'new-password') +
+        pwField('dlgPw2', '再输入一次', '', 'new-password') +
+        '<ul class="dlg-note">' +
+          '<li>加密后的备份才包含密码、钥匙串、健康数据和 Wi-Fi 配置，换机必备</li>' +
+          '<li><b>NAS 不会保存这个密码。</b>忘记密码就无法恢复加密备份，只能在手机上「还原所有设置」清除它后重新开启</li>' +
+          '<li>开启时手机可能要求输入锁屏密码，请解锁手机并留意屏幕</li>' +
+          '<li>开启后下一次备份通常会重新完整备份一次，耗时较长</li>' +
+        '</ul>'
+      : pwField('dlgPw', '当前备份密码', '开启加密时设置的密码', 'current-password') +
+        '<ul class="dlg-note">' +
+          '<li>关闭后的备份不再包含密码、钥匙串和健康数据</li>' +
+          '<li>手机可能要求输入锁屏密码确认，请解锁手机并留意屏幕</li>' +
+        '</ul>'
+  }, async setBusy => {
+    const pw = $('dlgPw').value;
+    if (!pw) throw new Error('请输入备份密码');
+    if (enable && pw !== $('dlgPw2').value) throw new Error('两次输入的密码不一致');
+    setBusy('等待手机确认…');
+    const r = await api('/api/devices/' + encodeURIComponent(udid) + '/encryption', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable, password: pw })
+    });
+    toast(r.message || '已更新');
+    refresh();
+  });
 }
 async function deleteBackup(id) {
   if (!confirm('删除备份记录 #' + id + '？\n注意：磁盘上目前只保留最新一次可恢复状态，删除记录只是移除展示条目，不会释放磁盘空间。')) return;
@@ -1081,10 +1245,12 @@ function renderSideFoot(offline) {
 /* ---------- 初始化 ---------- */
 async function refresh() {
   try {
-    const [st, devs, backups, settings] = await Promise.all([
-      api('/api/status'), api('/api/devices'), api('/api/backups'), api('/api/settings')
+    const [st, devs, backups, settings, sources] = await Promise.all([
+      api('/api/status'), api('/api/devices'), api('/api/backups'), api('/api/settings'),
+      api('/api/restore/sources')
     ]);
     state.status = st; state.devices = devs; state.backups = backups; state.settings = settings;
+    state.sources = sources;
     renderDashboard(); renderDevices(); renderHistory(); renderRestore(); renderSettings();
     renderSideFoot(false);
     /* 刷新页面 / 断开重开之后，后端可能还有任务在跑：自动重新接上，
@@ -1116,6 +1282,13 @@ document.querySelectorAll('.nav-item').forEach(el => {
   if (label) el.title = label.textContent.trim();
 });
 applySide();
+
+/* 刷新后回到上次所在的页。值可能是旧版本留下的（页面已不存在），
+   校验一下再切，否则 go() 里取不到元素会抛错 */
+try {
+  const savedView = localStorage.getItem('ivault-view');
+  if (savedView && savedView !== 'dashboard' && $('view-' + savedView)) go(savedView);
+} catch (e) { /* 读不到就留在总览 */ }
 
 wireSettings();
 refresh();
