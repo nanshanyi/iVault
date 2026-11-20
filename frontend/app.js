@@ -415,6 +415,12 @@ function renderDevices() {
     /* 徽标永远表示连接方式（Wi-Fi / USB / 离线）；「备份中」用名字旁的胶囊表达，
        两种状态都要看得见，不能互相顶掉 */
     const badge = conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线';
+    /* 加密开关不可用时必须说清原因：禁用按钮本身不会说话，
+       而 title 属性在手机上根本不显示，用户只看到一个点不动的灰字 */
+    const encNote = busy
+      ? (srcJob ? '这台设备正在作为恢复来源，任务结束后可修改' : '任务进行中，结束后可修改')
+      : live ? (d.encrypted ? '' : '加密备份才包含密码、钥匙串、健康数据')
+             : '设备未连接，连上后可修改';
     grid.insertAdjacentHTML('beforeend',
       '<div class="card" style="padding:0;overflow:hidden">' +
         '<div style="padding:20px;display:flex;gap:15px;align-items:center">' +
@@ -433,12 +439,14 @@ function renderDevices() {
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">记录数 / 占用</span><span class="num">' + (d.backup_count || 0) + ' 条 · ' + fmtSize(d.total_bytes) + '</span></div>' +
           /* 加密是设备侧开关：开着才备份密码、钥匙串、健康数据。修改要求设备在线且没有任务在跑 */
-          '<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--txt3)">备份加密</span>' +
-            '<span>' + (d.encrypted
-              ? '<span style="color:var(--green2)">已开启</span>'
-              : '<span title="未加密的备份不含密码、钥匙串、健康数据">未开启</span>') +
-            '<button class="log-btn"' + (live && !busy ? '' : ' disabled title="需要设备在线且没有进行中的任务"') +
-            ' onclick="toggleEncryption(\'' + esc(d.udid) + '\')">' + (d.encrypted ? '关闭' : '开启') + '</button></span></div>' +
+          '<div class="enc-row"><div class="enc-l"><span>备份加密</span>' +
+            (d.encrypted
+              ? '<span class="badge g"><i class="enc-dot"></i>已开启</span>'
+              : '<span class="badge a"><i class="enc-dot"></i>未开启</span>') +
+            '</div><button class="btn sm' + (d.encrypted ? '' : ' primary') + '"' +
+            (live && !busy ? '' : ' disabled') +
+            ' onclick="toggleEncryption(\'' + esc(d.udid) + '\')">' + (d.encrypted ? '关闭' : '开启') + '</button></div>' +
+          (encNote ? '<div class="enc-hint' + (live && !busy ? '' : ' warn') + '">' + esc(encNote) + '</div>' : '') +
         '</div>' +
         (live || !state.status.wifi_enabled ? '' :
           '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--txt3);line-height:1.75">' +
@@ -782,6 +790,28 @@ async function startBackup(udid) {
     if (!d) { toast('没有在线设备，请先用数据线连接'); go('devices'); return; }
     udid = d.udid;
   }
+  /* 未加密就开跑，拿到的是不含密码/钥匙串/健康数据的备份，而且事后补不回来
+     （只能重新跑一次完整备份）。这信息挂在设备卡片上容易被忽略，
+     用户真正动手的地方是这里，所以在动作前问一句，并给一条开启的捷径 */
+  const dev = (state.devices || []).find(x => x.udid === udid);
+  if (dev && !dev.encrypted) {
+    openDlg({
+      title: '「' + (dev.name || '这台设备') + '」还没开启备份加密',
+      okText: '仍然备份',
+      body:
+        '<ul class="dlg-note">' +
+          '<li>未加密的备份<b>不含</b>保存的密码、钥匙串、健康数据、Wi-Fi 配置</li>' +
+          '<li>换机恢复到新手机后，这些要重新登录、重新设置</li>' +
+          '<li>开启加密需要设备在线，且开启后下一次是<b>完整备份</b></li>' +
+        '</ul>' +
+        '<button class="btn" style="width:100%;justify-content:center"' +
+          ' onclick="closeDlg();toggleEncryption(\'' + esc(udid) + '\')">先去开启加密</button>'
+    }, async () => { await beginBackup(udid); });
+    return;
+  }
+  await beginBackup(udid);
+}
+async function beginBackup(udid) {
   go('tasks');
   try {
     const r = await api('/api/backups', {
