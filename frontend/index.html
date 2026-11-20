@@ -2,16 +2,19 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>iVault · iPhone 备份中心</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <script>
-/* 侧栏收起状态尽早应用到 <html>，避免首屏先展开再收起闪一下 */
+/* 侧栏收起状态尽早应用到 <html>，避免首屏先展开再收起闪一下。
+   条件必须和 app.js 的 sideShouldCollapse() 一致：手机上永远是底部标签栏，
+   若这里仍按 desktop 的 localStorage 加上 side-collapsed，会先闪一下收起态，
+   而且这段时间 .side-collapsed .nav-badge{display:none} 会把任务角标也藏掉 */
 try {
   var _sc = localStorage.getItem('ivault-side');
-  if (_sc === '1' || (_sc === null && innerWidth <= 1000)) document.documentElement.classList.add('side-collapsed');
+  if (innerWidth > 640 && (_sc === '1' || (_sc === null && innerWidth <= 1000))) document.documentElement.classList.add('side-collapsed');
 } catch (e) {}
 </script>
 <style>
@@ -34,6 +37,13 @@ try {
   --shadow:0 8px 32px rgba(0,0,0,.45);
   --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
   --cs:dark;
+  /* 安全区（刘海 / 圆角 / Home 指示条）：全站只在这里读一次 env()。
+     前提是上面的 <meta viewport> 带了 viewport-fit=cover —— 少了它 env() 恒为 0，
+     页面会被浏览器整体塞进安全区，看起来"适配了"其实靠的是兜底。
+     竖屏时左右为 0、底边约 34px；横屏时左右 47–59px、底边约 21px。 */
+  --safe-l:env(safe-area-inset-left);
+  --safe-r:env(safe-area-inset-right);
+  --safe-b:env(safe-area-inset-bottom);
 }
 :root[data-theme="light"]{
   --bg:#f3f6f9; --bg2:#ffffff; --card:#ffffff; --card-hover:#f7fafc;
@@ -80,7 +90,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 ::selection{background:rgba(0,196,127,.3)}
 
 /* ===== 布局 ===== */
-.app{display:flex; min-height:100vh}
+/* 安全区：横屏时 iPhone 的刘海/圆角在左右两侧，这里把宽度让出来，
+   否则侧栏左边缘或底部标签栏两端的图标会被切掉。竖屏时 inset 为 0，行为同原来 */
+.app{display:flex; min-height:100vh;
+  padding-left:var(--safe-l); padding-right:var(--safe-r)}
 .sidebar{width:232px; padding:22px 14px; border-right:1px solid var(--stroke);
   background:var(--side-bg); backdrop-filter:blur(20px); position:sticky; top:0; height:100vh;
   display:flex; flex-direction:column; flex-shrink:0; transition:width .22s ease, padding .22s ease}
@@ -209,6 +222,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .dev-card .info{flex:1;min-width:0}
 .dev-card .info b{font-size:14.5px}
 .dev-card .info .meta{font-size:11.5px;color:var(--txt3);margin-top:4px}
+/* 设备卡底部的三个操作：一行放不下就换行，主按钮保持整行宽度 */
+.dev-actions{padding:14px 20px;border-top:1px solid var(--stroke);display:flex;gap:9px;flex-wrap:wrap}
 
 .heat{display:grid;grid-template-rows:repeat(7,11px);grid-auto-flow:column;gap:3.5px;margin-top:14px}
 .heat i{width:11px;height:11px;border-radius:3px;background:var(--heat0)}
@@ -232,7 +247,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
   padding:32px 32px 32px calc(var(--side-w) + 32px);
   background:rgba(4,9,14,.55);backdrop-filter:blur(5px);animation:wizfade .2s ease}
 @keyframes wizfade{from{opacity:0}to{opacity:1}}
-.wizard{width:100%;max-width:520px;margin:0;position:relative;max-height:calc(100vh - 64px);overflow:auto;
+.wizard{width:100%;max-width:520px;margin:0;position:relative;overflow:auto;
+  max-height:calc(100vh - 64px);       /* 旧浏览器兜底 */
+  max-height:calc(100dvh - 64px);      /* 100vh 含被工具栏盖住的区域，浮层会比可视区高 */
   border-color:rgba(0,196,127,.35);box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 40px rgba(0,196,127,.08);
   animation:wizpop .24s cubic-bezier(.2,.9,.3,1.1)}
 @keyframes wizpop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
@@ -252,7 +269,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
 .log-btn{background:none;border:1px solid transparent;color:var(--txt3);font-size:11px;
   padding:2px 7px;border-radius:7px;cursor:pointer;margin-left:7px;font-family:inherit;transition:.18s}
 .log-btn:hover{color:var(--green2);border-color:rgba(0,196,127,.4);background:var(--card-hover)}
-@media (max-width:1000px){.wiz-overlay{padding:20px 20px 20px calc(var(--side-w) + 20px)}}
+@media (max-width:1000px){.wiz-overlay{padding:20px calc(20px + var(--safe-r)) 20px calc(var(--side-w) + 20px + var(--safe-l))}}
 .steps{display:flex;align-items:center;margin-bottom:28px}
 .step{flex:1;text-align:center;position:relative}
 .step .c{width:34px;height:34px;border-radius:99px;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;
@@ -365,6 +382,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","M
   transition:width .4s;box-shadow:0 0 10px rgba(0,196,127,.5)}
 
 /* ===== 表格 ===== */
+/* 外层负责横向滚动：列一多就让表格自己滚，而不是把列压到文字折行 */
+.tbl-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tbl-wrap::-webkit-scrollbar{height:6px}
+.tbl-wrap::-webkit-scrollbar-thumb{background:var(--stroke2);border-radius:99px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;font-size:11px;color:var(--txt3);font-weight:600;letter-spacing:.5px;
   padding:10px 14px;border-bottom:1px solid var(--stroke);text-transform:uppercase}
@@ -389,6 +410,11 @@ td b{color:var(--txt);font-weight:600}
 .seg span.on{background:var(--green-dim);color:var(--green2)}
 .path-ipt{display:flex;align-items:center;gap:10px;background:var(--input-bg);border:1px solid var(--stroke);
   border-radius:10px;padding:9px 14px;font-family:var(--mono);font-size:12.5px;color:var(--green2)}
+/* 路径里没有空格和连字符时没有任何断行机会，一条长路径能把整页撑出横向滚动条。
+   anywhere 允许在任意位置断；min-width:0 让它在 flex/grid 里肯被压缩 */
+.path-ipt,#aboutText{overflow-wrap:anywhere;min-width:0}
+/* 字号放在样式表里而不是行内：手机端要在下面统一抬到 16px，行内样式压不住 */
+#whInput{font-size:12.5px}
 
 /* ===== 时间选择器 ===== */
 .time-ipt{display:flex;align-items:center;gap:9px;background:var(--input-bg);border:1px solid var(--stroke);
@@ -416,16 +442,114 @@ td b{color:var(--txt);font-weight:600}
 .empty{text-align:center;padding:44px 20px;color:var(--txt3)}
 .empty p{font-size:13px;margin-top:12px;line-height:1.7}
 .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
-@media (max-width:1080px){.dash-grid,.settings-grid{grid-template-columns:1fr}}
-/* 手机竖屏：行内「标题 + 控件」左右布局改为上下堆叠，避免长路径与按钮互相挤压 */
+/* 1fr 的最小宽度等于内容宽度：长路径会把单列网格一起撑宽，整页跟着横向晃动。
+   minmax(0,1fr) 的最小宽度是 0，列宽只由容器决定 */
+@media (max-width:1080px){
+  .dash-grid,.settings-grid{grid-template-columns:minmax(0,1fr)}
+}
+/* 平板：内容区留白收一点，7 列表格才不会一进就被挤扁 */
+@media (max-width:1080px){.main{padding:24px 20px 56px}}
+
+/* 恢复入口行：窄屏时按钮被长文案挤走，允许换行 */
+#restoreList>div{flex-wrap:wrap}
+
+/* ============================================================
+   手机（≤640px）：侧栏换成底部标签栏
+   侧栏 232px 在 390px 屏上要占掉六成宽度，剩下的空间连一行表格都放不下；
+   改成底部四个标签后主区直接吃满宽度，拇指也比指针更好够。
+   ============================================================ */
 @media (max-width:640px){
-  .main{padding:20px 16px 48px}
-  .page-head{flex-direction:column;align-items:flex-start;gap:12px}
+  .app{display:block}
+  .main{padding:18px 14px calc(84px + var(--safe-b));max-width:none}
+  .page-head{flex-direction:column;align-items:flex-start;gap:12px;margin-bottom:18px}
   .page-head .btn{width:100%;justify-content:center}
+
+  /* —— 侧栏 → 底部标签栏 —— */
+  .sidebar,.side-collapsed .sidebar{
+    position:fixed;left:0;right:0;bottom:0;top:auto;z-index:60;
+    width:auto;height:auto;
+    /* 左右也要让安全区：横屏时第一个/最后一个标签正好压在刘海下面 */
+    padding:6px calc(6px + var(--safe-r)) calc(6px + var(--safe-b)) calc(6px + var(--safe-l));
+    border-right:0;border-top:1px solid var(--stroke);background:var(--side-bg);
+    backdrop-filter:blur(20px)}
+  .logo,.side-tools,.side-foot,.side-toggle{display:none}
+  .nav{flex-direction:row;gap:2px;flex:none}
+  .nav-item,.side-collapsed .nav-item{flex:1;min-width:0;height:auto;flex-direction:column;
+    gap:4px;justify-content:center;padding:7px 2px;border-radius:11px;font-size:10.5px;font-weight:500;
+    position:relative}
+  .nav-item svg{width:20px;height:20px}
+  /* 手机上没有「收起」这回事，收起态的文字必须还在 */
+  .side-collapsed .nav-item span{display:inline}
+  .nav-badge,.side-collapsed .nav-badge{position:absolute;top:5px;right:calc(50% - 24px);
+    margin:0;padding:1px 5px;font-size:9px}
+
+  /* —— 总览 —— */
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:16px}
+  .card{padding:16px}
+  .stat .val{font-size:21px}
+  .stat .lbl{font-size:11px;margin-bottom:8px}
+  .dev-card{padding:14px;gap:12px;margin-bottom:10px}
+  .dev-card .info b{font-size:13.5px}
+  .dev-ico{width:40px;height:40px;border-radius:11px}
+  .dev-ico svg{width:20px;height:20px}
+  .dev-card .badge{font-size:10px;padding:2px 7px}
+  .batt{font-size:10.5px;gap:3px}
+  .batt svg{width:19px;height:19px}
+  /* 三个操作按钮在手机上分两行：备份占一行，台账/取消配对并排 */
+  .dev-actions{padding:12px 14px;gap:8px}
+  .dev-actions .btn{flex:1;justify-content:center;padding-left:10px;padding-right:10px}
+  .heat{gap:3px}
+  .heat i{width:9px;height:9px;border-radius:2.5px}
+  .heat{grid-template-rows:repeat(7,9px)}
+
+  /* —— 任务进行中：圆环在上，统计在下 —— */
+  .job-live{flex-direction:column;align-items:stretch;gap:18px}
+  .progress-ring{margin:0 auto}
+  .job-stats{gap:10px 14px}
+  .job-stats .v{font-size:14.5px}
+  #liveJob>.card,.term{word-break:break-word}
+
+  /* —— 设置 —— */
+  /* iOS Safari：输入框字号小于 16px 时，一获得焦点就会放大整页，输完还得手动缩回。
+     手机上统一抬到 16px，视觉差别很小，交互差别很大 */
+  #whInput,#timeInput,.auth-input{font-size:16px}
   .set-row{flex-direction:column;align-items:stretch;gap:10px}
-  .set-row .btn{align-self:flex-end}
+  .set-row .btn{align-self:flex-start}
+  .set-row .seg{width:100%}
+  .set-row .seg span{flex:1;text-align:center}
   .path-ipt{max-width:100%}
   .path-ipt input{min-width:0}
+  .time-ipt{align-self:flex-start}
+
+  /* —— 配对向导：整屏底部抽屉，不再让出侧栏宽度 —— */
+  .wiz-overlay{padding:14px calc(12px + var(--safe-r)) calc(14px + var(--safe-b)) calc(12px + var(--safe-l));align-items:flex-end}
+  .wizard{max-width:100%;border-radius:18px;
+    max-height:calc(100vh - 40px);      /* 旧浏览器兜底 */
+    max-height:calc(100dvh - 40px)}     /* 工具栏收起时 100vh 会算高，抽屉顶部被顶出屏幕，× 点不到 */
+  .steps{margin-bottom:20px}
+
+  .toast{bottom:calc(78px + var(--safe-b))}
+
+  /* —— 任务台账：7 列表格 → 卡片 ——
+     表格在 320–640px 之间没有不失真的排法（7 列最窄也要 620px），
+     硬塞只会文字折行、按钮错位。改成「字段名 : 值」的竖向卡片，
+     一屏能看清两三条，翻找比横向拖动快。
+     断点与底部标签栏共用同一条线，避免出现「导航认为是电脑、
+     表格认为是手机」的夹缝（iPhone SE2 横屏 667px 正落在那里）。 */
+  #view-tasks .tbl-wrap{overflow:visible}
+  #view-tasks thead{display:none}
+  #histBody tr{display:block;padding:14px 16px;border-bottom:1px solid var(--row-line)}
+  #histBody tr:last-child{border-bottom:0}
+  #histBody td{display:flex;align-items:baseline;justify-content:space-between;gap:14px;
+    padding:3px 0;border:0;font-size:12.5px}
+  #histBody td::before{content:attr(data-label);flex:none;font-size:11px;color:var(--txt3)}
+  /* 设备名当卡片标题，不值当再加一行「设备」标签 */
+  #histBody td[data-label="设备"]{display:block;padding-bottom:8px}
+  #histBody td[data-label="设备"]::before{display:none}
+  /* 操作按钮单独一行、靠右 */
+  #histBody td[data-label="操作"]{justify-content:flex-end;padding-top:9px}
+  #histBody td[data-label="操作"]::before{display:none}
+  #histBody td.empty{display:block;padding:26px 0;text-align:center}
 }
 
 </style>
@@ -594,10 +718,12 @@ td b{color:var(--txt);font-weight:600}
       <b style="font-size:14.5px">任务台账</b>
       <span class="badge b" id="schedBadge">定时：—</span>
     </div>
+    <div class="tbl-wrap">
     <table>
       <thead><tr><th>设备</th><th>类型</th><th>开始时间</th><th>耗时</th><th>数据量</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
       <tbody id="histBody"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
     </table>
+    </div>
   </div>
 </section>
 
@@ -621,7 +747,7 @@ td b{color:var(--txt);font-weight:600}
       <div class="card">
         <b style="font-size:14.5px">通知</b>
         <div class="set-row"><div><div class="k">Webhook 地址</div><div class="d">每次备份/恢复任务结束时 POST JSON，失败带具体原因</div></div>
-          <div class="path-ipt"><input id="whInput" placeholder="http://Bark:端口/DeviceKey" style="background:none;border:none;color:var(--green2);font-family:var(--mono);font-size:12.5px;width:100%;outline:none"></div></div>
+          <div class="path-ipt"><input id="whInput" placeholder="http://Bark:端口/DeviceKey" style="background:none;border:none;color:var(--green2);font-family:var(--mono);width:100%;outline:none"></div></div>
         <div class="set-row"><div><div class="k">通知范围</div><div class="d">成功也推，还是只在出问题时打扰你</div></div>
           <div class="seg" id="notifyScope"><span data-v="all">全部结果</span><span data-v="failure">仅失败与取消</span></div></div>
         <div class="set-row"><div><div class="k">测试通知</div><div class="d">用当前地址发一条测试消息，配没配对一点就知道</div></div>

@@ -105,8 +105,10 @@ function toast(msg) {
 }
 
 /* ---------- 侧栏收起 ---------- */
-/* 显式选择优先（localStorage）；没选过时按窗口宽度决定，和首屏脚本保持一致 */
+/* 显式选择优先（localStorage）；没选过时按窗口宽度决定，和首屏脚本保持一致。
+   手机上侧栏已经是底部标签栏，收起态没有意义，一律不收起 */
 function sideShouldCollapse() {
+  if (window.innerWidth <= 640) return false;
   const saved = localStorage.getItem('ivault-side');
   if (saved === '1' || saved === '0') return saved === '1';
   return window.innerWidth <= 1000;
@@ -398,7 +400,7 @@ function renderDevices() {
               '<b class="dp-pct">' + (job.progress || 0) + '%</b></div>' +
             '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, job.progress || 0)) + '%"></i></div>' +
           '</div>' : '') +
-        '<div style="padding:14px 20px;border-top:1px solid var(--stroke);display:flex;gap:9px">' +
+        '<div class="dev-actions">' +
           (job
             /* 任务跑着的时候再点「立即备份」只会撞上「设备忙」，直接给进度入口 */
             ? '<button class="btn primary" style="flex:1;justify-content:center" onclick="go(\'tasks\')">查看进度</button>'
@@ -905,12 +907,15 @@ function renderHistory() {
     body.innerHTML = '<tr><td colspan="7" class="empty">暂无任务记录，完成首次备份后会显示在这里</td></tr>';
     return;
   }
+  // 每个 td 带 data-label：窄屏下表格改成卡片时，字段名由 CSS 的 ::before 取出来
   running.forEach(j => {
     body.insertAdjacentHTML('beforeend',
-      '<tr><td><b>' + esc(devName(j.udid)) + '</b></td><td><span class="badge b">进行中</span></td>' +
-      '<td class="num">当前</td><td class="num">—</td><td class="num">' + (j.progress || 0) + '%</td>' +
-      '<td><span class="badge g">运行中</span></td>' +
-      '<td style="text-align:right;font-size:12px;color:var(--txt3)">下方实时进度</td></tr>');
+      '<tr><td data-label="设备"><b>' + esc(devName(j.udid)) + '</b></td>' +
+      '<td data-label="类型"><span class="badge b">进行中</span></td>' +
+      '<td data-label="开始时间" class="num">当前</td><td data-label="耗时" class="num">—</td>' +
+      '<td data-label="进度" class="num">' + (j.progress || 0) + '%</td>' +
+      '<td data-label="状态"><span class="badge g">运行中</span></td>' +
+      '<td data-label="操作" style="text-align:right;font-size:12px;color:var(--txt3)">下方实时进度</td></tr>');
   });
   backups.forEach(s => {
     const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at : null;
@@ -923,12 +928,13 @@ function renderHistory() {
     const delBtn = s.status === 'RUNNING' ? ''
       : '<button class="btn ghost" style="font-size:12px;color:var(--txt3)" onclick="deleteBackup(' + s.id + ')" title="只删除这条记录，不动磁盘数据">删除</button>';
     body.insertAdjacentHTML('beforeend',
-      '<tr><td><b>' + esc(devName(s.udid)) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">BKP-' + String(s.id).padStart(4, '0') + '</div></td>' +
-      '<td><span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span></td>' +
-      '<td class="num">' + fmtTs(s.started_at) + '</td><td class="num">' + fmtDur(dur) + '</td>' +
-      '<td class="num">' + fmtSize(s.size_bytes) + '</td>' +
-      '<td><span class="badge ' + badge + '">' + label + '</span></td>' +
-      '<td style="text-align:right;white-space:nowrap">' + logBtn + delBtn + '</td></tr>');
+      '<tr><td data-label="设备"><b>' + esc(devName(s.udid)) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">BKP-' + String(s.id).padStart(4, '0') + '</div></td>' +
+      '<td data-label="类型"><span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span></td>' +
+      '<td data-label="开始时间" class="num">' + fmtTs(s.started_at) + '</td>' +
+      '<td data-label="耗时" class="num">' + fmtDur(dur) + '</td>' +
+      '<td data-label="数据量" class="num">' + fmtSize(s.size_bytes) + '</td>' +
+      '<td data-label="状态"><span class="badge ' + badge + '">' + label + '</span></td>' +
+      '<td data-label="操作" style="text-align:right;white-space:nowrap">' + logBtn + delBtn + '</td></tr>');
   });
 }
 
