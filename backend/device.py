@@ -72,30 +72,75 @@ def net_args(udid: str) -> list[str]:
     return ["-n"] if get_transport(udid) == TRANSPORT_NET else []
 
 
-async def scan_devices() -> list[dict]:
+# ---------- 无线探活缓存 ----------
+# 设备轮询每 3 秒一轮。每轮都给每台无线设备跑一次 validate 的话，每次都要新建一条
+# 网络 lockdown 连接，一天两万多次，还会不停唤醒休眠的手机；mDNS 残留的失效条目
+# 每次还要等满 5 秒超时。所以：
+#   · 探活成功的，60 秒内直接当在线（代价：离开局域网后最多 60 秒才显示离线）
+#   · 探活失败的，按 30 → 60 → 120 秒退避。上限不能太高：netmuxd 通常不会把休眠的
+#     手机从 -n 列表里删掉，「重新出现就立刻探」触发不了，手机醒来后要等满一个
+#     退避周期才显示在线；代价是失效条目每 2 分钟等一次 5 秒超时
+#   · 刚出现在 mDNS 列表里的（手机醒来 / 回到局域网会重新广播），立刻探
+#   · 要对某台设备发起备份、恢复、改加密时，调用方传 probe=udid 只对它强制现探
+NET_ALIVE_TTL = 60
+NET_RETRY_MIN = 30
+NET_RETRY_MAX = 120
+_net_probe: dict[str, dict] = {}   # udid -> {"ok", "at", "fails"}
+
+
+def _net_need_probe(udid: str, now: float) -> bool:
+    p = _net_probe.get(udid)
+    if p is None:
+        return True
+    if p["ok"]:
+        return now - p["at"] >= NET_ALIVE_TTL
+    # fails 封顶：连续失败一年 fails 会到十万级，没必要每轮算一个大整数
+    gap = min(NET_RETRY_MAX, NET_RETRY_MIN * 2 ** (min(p["fails"], 8) - 1))
+    return now - p["at"] >= gap
+
+
+async def scan_devices(include_net: bool = True, probe: str | None = None) -> list[dict]:
     """扫描 USB + 网络设备，返回 [{"udid", "connection"}]。
 
     -l 列出 USB 直连设备；-n 列出经 mDNS 发现、且已开启 Wi-Fi 同步的设备
     （需要 netmuxd 在跑，见 scripts/entrypoint.sh）。先扫 USB，重复的以 USB 为准。
 
-    网络设备必须再探活一次：mDNS 会留下已关机 / 已离开局域网的失效条目，
-    直接当成在线会出现「显示 Wi-Fi 在线但备份立刻 Mux error」的假状态。
+    网络设备必须探活：mDNS 会留下已关机 / 已离开局域网的失效条目，直接当成在线
+    会出现「显示 Wi-Fi 在线但备份立刻 Mux error」的假状态。探活结果按上面的规则缓存。
+
+    include_net=False 只扫 USB（配对向导用：iPhone 不支持无线配对）；
+    probe=udid 时无视缓存，对这一台现探一次。
     """
     usb: list[str] = []
     code, out = await _run([config.BIN_IDEVICE_ID, "-l"])
     if code == 0:
         usb = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    result = [{"udid": u, "connection": TRANSPORT_USB} for u in usb]
+    if not include_net:
+        return result
 
     code, out = await _run([config.BIN_IDEVICE_ID, "-n"])
-    net_candidates = [ln.strip() for ln in out.splitlines() if ln.strip()] if code == 0 else []
-    net_candidates = [u for u in net_candidates if u not in usb]
+    cands = [ln.strip() for ln in out.splitlines() if ln.strip()] if code == 0 else []
+    cands = [u for u in cands if u not in usb]
 
-    alive = await asyncio.gather(*(_net_alive(u) for u in net_candidates)) \
-        if net_candidates else []
+    # 从列表消失或改插 USB 的，缓存作废。之后它再出现时没有缓存，会被立刻探活——
+    # 「手机回到局域网马上显示在线」靠的就是这一步
+    for u in list(_net_probe):
+        if u not in cands:
+            _net_probe.pop(u, None)
 
-    result = [{"udid": u, "connection": TRANSPORT_USB} for u in usb]
+    now = time.time()
+    todo = [u for u in cands if u == probe or _net_need_probe(u, now)]
+    if todo:
+        oks = await asyncio.gather(*(_net_alive(u) for u in todo))
+        at = time.time()
+        for u, ok in zip(todo, oks):
+            prev = _net_probe.get(u)
+            fails = 0 if ok else ((prev["fails"] if prev and not prev["ok"] else 0) + 1)
+            _net_probe[u] = {"ok": ok, "at": at, "fails": fails}
+
     result += [{"udid": u, "connection": TRANSPORT_NET}
-               for u, ok in zip(net_candidates, alive) if ok]
+               for u in cands if _net_probe.get(u, {}).get("ok")]
     return result
 
 
@@ -109,11 +154,6 @@ async def _net_alive(udid: str, timeout: float = 5.0) -> bool:
     """
     code, _ = await _run([config.BIN_IDEVICEPAIR, "-n", "-u", udid, "validate"], timeout=timeout)
     return code == 0
-
-
-async def list_devices() -> list[str]:
-    """已连接设备的 UDID 列表（含 USB 与无线）。"""
-    return [d["udid"] for d in await scan_devices()]
 
 
 async def device_info(udid: str) -> dict:
@@ -424,7 +464,7 @@ async def unpair(udid: str) -> dict:
     情况下打印 "SUCCESS: Unpaired with device"，退出码 0（例如手机锁屏、或证书文件
     所在目录对当前用户不可写）。唯一可信的判据是再问一次设备：validate 还能不能过。
     """
-    online = udid in await list_devices()
+    online = udid in [d["udid"] for d in await scan_devices(probe=udid)]
     claimed, out = False, ""
     purged, scan_error, failed = 0, None, []
     still_paired, tool_broken = False, False
@@ -549,7 +589,7 @@ class PairSession:
         while loop.time() < deadline:
             # 只挑 USB 设备：iPhone 的无线配对不被 idevicepair 支持
             # （官方 NOTE：network pairing 仅 Apple TV），无线只能备份已配对设备。
-            usb = [d["udid"] for d in await scan_devices() if d["connection"] == TRANSPORT_USB]
+            usb = [d["udid"] for d in await scan_devices(include_net=False)]
             known = {row["udid"] for row in store.list_devices()}
             fresh = [u for u in usb if u not in known]
             if fresh:
@@ -603,7 +643,7 @@ class PairSession:
                         "hint": "请在 iPhone 上点击「信任此电脑」"})
         while loop.time() < deadline:
             # 先确认设备还在线上：拔线是用户看到「不弹窗」后最自然的动作
-            udids = await list_devices()
+            udids = [d["udid"] for d in await scan_devices(include_net=False)]
             if self.udid not in udids:
                 if plugged:
                     plugged = False

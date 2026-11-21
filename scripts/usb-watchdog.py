@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 USBMUXD = "/opt/usbmuxd-stock/sbin/usbmuxd"
@@ -143,14 +144,30 @@ def listed_count():
     return sum(1 for line in out.decode("utf-8", "replace").split() if line.strip())
 
 
+# 必须和 backend/main.py 的 INTERNAL_HEADER 一致：名字对不上时后端返回 401，
+# 看护按「忙」处理、永远不重启 usbmuxd，插线后手机会一直显示离线
+INTERNAL_HEADER = "X-iVault-Internal"
+
+
 def jobs_running():
-    """True=有备份任务, False=空闲, None=状态查不到（保守按忙处理）。"""
+    """返回 (状态, 原因)。状态：True=有备份任务, False=空闲, None=查不到（保守按忙处理）；
+    原因只在查不到时给，由主循环限频打进日志。
+    """
     try:
-        with urllib.request.urlopen("http://127.0.0.1:%s/api/status" % PORT, timeout=2) as r:
+        # 启用访问密码时，后端凭这个令牌放行（entrypoint 生成，经环境变量传进来）
+        req = urllib.request.Request(
+            "http://127.0.0.1:%s/api/status" % PORT,
+            headers={INTERNAL_HEADER: os.environ.get("IVAULT_INTERNAL_TOKEN", "")})
+        with urllib.request.urlopen(req, timeout=2) as r:
             data = json.load(r)
-    except Exception:
-        return None
-    return bool(data.get("active_jobs"))
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return None, ("后端返回 401：内部令牌缺失，或请求头名与 backend/main.py 的 "
+                          "INTERNAL_HEADER 不一致（是否跳过了 entrypoint.sh？）")
+        return None, "后端返回 HTTP %s" % e.code
+    except Exception as e:  # noqa: BLE001  后端没起来、超时
+        return None, "无法连接后端（%s）" % (e.__class__.__name__,)
+    return bool(data.get("active_jobs")), ""
 
 
 def pgrep(name):
@@ -414,11 +431,11 @@ def main():
         if now - last_restart < cooldown:
             continue
 
-        busy = jobs_running()
+        busy, why = jobs_running()
         if busy is None:
             if now - unknown_logged > 60:
                 unknown_logged = now
-                log("无法确认任务状态，暂缓重启（下一轮再判断）")
+                log("无法确认任务状态，暂缓重启（下一轮再判断）：" + why)
             continue
         if busy:
             log("检测到未识别的设备，但有备份任务在跑，暂缓重启")

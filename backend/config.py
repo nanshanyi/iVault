@@ -42,6 +42,10 @@ LOG_LEVEL = normalize_log_level(os.environ.get("IVAULT_LOG"), "INFO")
 # 都需要登录；服务以 privileged + host 网络运行、且能写设备数据，
 # 局域网内裸奔的风险与一个环境变量的成本完全不成比例，所以文档里强烈建议设置。
 PASSWORD = os.environ.get("IVAULT_PASSWORD", "").strip()
+# 容器内部进程（usb-watchdog）读 /api/status 用的令牌：entrypoint 每次启动随机生成，
+# 只经环境变量传给子进程，不落盘、不进日志。为空（本地开发、没走 entrypoint）时不放行任何请求。
+# 不能按来源地址放行：套反向代理后所有外网请求的来源都是 127.0.0.1。
+INTERNAL_TOKEN = os.environ.get("IVAULT_INTERNAL_TOKEN", "").strip()
 # 登录会话有效期（天），Cookie 的 max_age 与签发时效共用该值。
 # 与 normalize_log_level 同理：它在模块导入期执行，一个非法值不能让容器
 # 变成无限重启；钳制到 1–365，认不出就回默认 30。

@@ -75,6 +75,12 @@ fi
 
 echo "iVault starting → http://0.0.0.0:${IVAULT_PORT:-8666}"
 
+# 内部令牌：看护进程读 /api/status 时用它代替登录 Cookie。每次启动重新生成，
+# 只在本容器的进程环境里，不落盘、不打印。不能按来源地址放行：
+# 套反向代理后，外网请求到达 uvicorn 时来源同样是 127.0.0.1。
+IVAULT_INTERNAL_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+export IVAULT_INTERNAL_TOKEN
+
 # ---------- USB 热插拔看护 ----------
 # 容器里的 usbmuxd 收不到 USB 热插拔事件：libusb 的 hotplug 订阅的是 udevd 的
 # 转发组，而容器内没有 udevd、宿主 udevd 也不跨 netns 转发。结果就是设备表在
@@ -100,7 +106,7 @@ esac
 [ "$IVAULT_LOG" = "notset" ] && IVAULT_LOG=info
 export IVAULT_LOG
 
-# --no-access-log：前端每 6 秒 4 个轮询请求，开 access log 一天五万多条，
+# --no-access-log：前端每 6 秒 5 个轮询请求，开 access log 一天七万多条，
 # 真报错会被淹掉。改用 backend/main.py 里的中间件，只记出错、写操作与慢请求。
 exec python3 -m uvicorn backend.main:app \
     --host 0.0.0.0 --port "${IVAULT_PORT:-8666}" \

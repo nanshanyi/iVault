@@ -1377,5 +1377,19 @@ try {
 } catch (e) { /* 读不到就留在总览 */ }
 
 wireSettings();
-refresh();
-setInterval(refresh, 6000);
+/* 页签切到后台就停止轮询：后端靠 /api/devices 判断「有没有人在看」来决定要不要
+   采电量、频繁探活，后台页签照样每 6 秒拉一次的话，那套按需机制等于没有。
+   任务进度走 SSE 推送，不受影响；切回来立刻补一次刷新。 */
+let refreshTimer = null;
+function startPolling() {
+  if (refreshTimer) return;
+  refresh();
+  refreshTimer = setInterval(refresh, 6000);
+}
+function stopPolling() {
+  clearInterval(refreshTimer);
+  refreshTimer = null;
+}
+document.addEventListener('visibilitychange', () => (document.hidden ? stopPolling() : startPolling()));
+/* 在后台页签里打开（中键、Cmd+点击）时先不拉数据，切到前台才开始 */
+if (!document.hidden) startPolling();

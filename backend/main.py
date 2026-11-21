@@ -134,14 +134,20 @@ def _check_token(token: str) -> bool:
     return hmac.compare_digest(sig, good)
 
 
-def _is_loopback(request: Request) -> bool:
-    """请求是否来自容器内的回环地址。
+# 必须和 scripts/usb-watchdog.py 的 INTERNAL_HEADER 一致（看护脚本单独拷进镜像，不能 import 这里）
+INTERNAL_HEADER = "X-iVault-Internal"
 
-    usb-watchdog 这类内部进程没有登录态，只能靠这个判断它确实在本机。
-    network_mode: host 下 127.0.0.1 是宿主机自身，局域网客户端不会命中。
+
+def _is_internal(request: Request) -> bool:
+    """请求是否来自容器内部进程（带着 entrypoint 生成的令牌）。
+
+    以前按来源地址判断（127.0.0.1 就放行），但套了反向代理之后，外网请求到达
+    这里时来源同样是 127.0.0.1，等于对外免登录。令牌只存在于容器进程的环境变量里。
     """
-    host = request.client.host if request.client else ""
-    return host in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+    if not config.INTERNAL_TOKEN:
+        return False
+    got = request.headers.get(INTERNAL_HEADER, "")
+    return hmac.compare_digest(got.encode("utf-8", "replace"), config.INTERNAL_TOKEN.encode())
 
 
 @app.middleware("http")
@@ -154,9 +160,8 @@ async def _auth_guard(request: Request, call_next):
     if path == "/api/login" or not path.startswith("/api"):
         return await call_next(request)     # 登录接口与静态前端（登录页本身）放行
     # usb-watchdog 是容器内的独立进程，重启 usbmuxd 前必须确认没有任务在跑，
-    # 而它拿不到登录 Cookie —— 只对回环地址放行这一个只读接口。
-    # 局域网客户端仍然需要登录，鉴权边界不变。
-    if path == "/api/status" and _is_loopback(request):
+    # 而它拿不到登录 Cookie —— 凭内部令牌只放行这一个只读接口。
+    if path == "/api/status" and request.method == "GET" and _is_internal(request):
         return await call_next(request)
     if _check_token(request.cookies.get(COOKIE_NAME, "")):
         return await call_next(request)
@@ -309,9 +314,13 @@ async def startup():
     log.info("iVault 启动完成，备份目录=%s", config.BACKUP_DIR)
 
 
-async def _refresh_transports() -> None:
-    """刷新在线设备与各自的连接方式（USB / 无线）。"""
-    devs = await device.scan_devices()
+async def _refresh_transports(probe: str | None = None) -> None:
+    """刷新在线设备与各自的连接方式（USB / 无线）。
+
+    probe=udid：马上要对这台设备动手（备份、恢复、改加密），无线探活不走缓存，
+    避免对一台 60 秒内已经离开的手机发起任务。
+    """
+    devs = await device.scan_devices(probe=probe)
     old = _state["transports"]
     new = {d["udid"]: d["connection"] for d in devs}
     # 离线或换了连接方式时旧电量作废：无线换成 USB 就是插上线开始充电了，
@@ -512,7 +521,7 @@ async def trigger_backup(body: dict):
     # 触发前再刷一次：既校验在线状态，也确保连接方式（USB / 无线）是最新的，
     # 否则可能用错误通道去连设备
     try:
-        await _refresh_transports()
+        await _refresh_transports(probe=udid)
     except Exception as e:  # noqa: BLE001
         log.warning("触发前刷新设备失败：%s", e)
     if udid not in _state["online_devices"]:
@@ -577,7 +586,7 @@ async def trigger_restore(body: dict):
     if meta.get("encrypted") and not password:
         raise HTTPException(400, "这份备份已加密，需要输入备份密码")
     try:
-        await _refresh_transports()
+        await _refresh_transports(probe=udid)
     except Exception as e:  # noqa: BLE001
         log.warning("恢复前刷新设备失败：%s", e)
     if udid not in _state["online_devices"]:
@@ -616,7 +625,7 @@ async def set_encryption(udid: str, body: dict):
     if not store.get_device(udid):
         raise HTTPException(404, "设备不存在")
     try:
-        await _refresh_transports()
+        await _refresh_transports(probe=udid)
     except Exception as e:  # noqa: BLE001
         log.warning("修改加密前刷新设备失败：%s", e)
     if udid not in _state["online_devices"]:
@@ -875,6 +884,16 @@ async def _scheduler_loop():
                             if udid not in battery_logged:
                                 battery_logged.add(udid)
                                 log.warning("定时备份暂缓 %s：%s", udid, reason)
+                            continue
+                        # 开跑前对这一台现探：online_devices 里的无线状态最多滞后 60 秒，
+                        # 手机刚离开局域网就会被当成在线，白白耗掉一次失败重试。
+                        # 必须放在电量检查之后：被电量拦住的设备每 20 秒都会走到上面，
+                        # 放前面就等于每 20 秒强制探活一次，缓存形同虚设。
+                        try:
+                            await _refresh_transports(probe=udid)
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("定时备份前刷新设备失败：%s", e)
+                        if udid not in _state["online_devices"]:
                             continue
                         # 设备互斥仍由 jobs._claim 裁决，这里只接住 DeviceBusy
                         try:
