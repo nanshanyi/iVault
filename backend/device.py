@@ -138,24 +138,61 @@ async def device_info(udid: str) -> dict:
     return info
 
 
-_battery_cache: dict[str, tuple[float, dict]] = {}
+# ---------- 电量 ----------
+# 电量只是提示信息，但查一次要拉起 ideviceinfo：USB 走本机 usbmuxd 几十毫秒，
+# 无线要新建一条网络 lockdown 连接，慢时 6 秒，还可能把休眠的手机网络唤醒。
+# 所以读和查分开：页面、调度器读 battery_cached()（零开销），
+# 真正去查只有 battery_refresh()，由调用方按 battery_stale() 决定要不要查。
+BATTERY_MAX_AGE_USB = 60
+BATTERY_MAX_AGE_NET = 600
+
+# udid -> {"level", "charging", "external", "full", "at"}；查过但读不到时只有 {"at"}
+_battery: dict[str, dict] = {}
+_battery_inflight: dict[str, asyncio.Task] = {}
 
 
-async def battery_info(udid: str, ttl: float = 15.0) -> dict | None:
-    """读取电量与充电状态（com.apple.mobile.battery）。
+def battery_cached(udid: str) -> dict | None:
+    """最近一次读数（含采样时间 at）；没查过或上次没读到返回 None。"""
+    b = _battery.get(udid)
+    return b if b and "level" in b else None
 
-    返回 {"level": 0–100, "charging": bool, "external": bool, "full": bool}；
-    取不到（设备忙、离线、字段缺失）就返回 None——电量只是提示信息，
-    不能因为查不到就挡住页面或任务。
 
-    带 TTL 缓存：页面每 6 秒轮询一次，每次都 spawn 一个 ideviceinfo 太重，
-    无线设备尤其慢。
+def battery_sampled(udid: str) -> bool:
+    """采过没有（不论读没读到）。前端据此区分「读取中…」和「未取到」。"""
+    return udid in _battery
+
+
+def battery_stale(udid: str, max_age: float | None = None) -> bool:
+    """读数是否过期。max_age 不给时按连接方式：USB 60 秒，无线 10 分钟。
+
+    「查过但没读到」也算一次采样：设备忙或字段缺失时，不能每轮都重查。
     """
-    now = time.time()
-    hit = _battery_cache.get(udid)
-    if hit and now - hit[0] < ttl:
-        return hit[1] or None
+    b = _battery.get(udid)
+    if max_age is None:
+        max_age = BATTERY_MAX_AGE_NET if get_transport(udid) == TRANSPORT_NET else BATTERY_MAX_AGE_USB
+    return b is None or time.time() - b["at"] >= max_age
 
+
+def battery_forget(udid: str) -> None:
+    """作废读数：设备离线、换了连接方式（插线就是开始充电）、任务刚结束时调用。"""
+    _battery.pop(udid, None)
+
+
+async def battery_refresh(udid: str) -> dict | None:
+    """现查一次电量并写入缓存；同一台设备并发调用只会拉起一个进程。
+
+    返回 {"level": 0–100, "charging", "external", "full", "at"}；取不到（设备忙、
+    离线、字段缺失）返回 None——不能因为查不到就挡住页面或任务。
+    """
+    task = _battery_inflight.get(udid)
+    if task is None:
+        task = asyncio.ensure_future(_battery_query(udid))
+        _battery_inflight[udid] = task
+        task.add_done_callback(lambda _t: _battery_inflight.pop(udid, None))
+    return await asyncio.shield(task)
+
+
+async def _battery_query(udid: str) -> dict | None:
     code, out = await _run(
         [config.BIN_IDEVICE_INFO, *net_args(udid), "-u", udid, "-q", "com.apple.mobile.battery"],
         timeout=6,
@@ -166,20 +203,18 @@ async def battery_info(udid: str, ttl: float = 15.0) -> dict | None:
             m = re.match(r"^([^:]+):\s*(.+)$", ln.strip())
             if m:
                 info[m.group(1).strip()] = m.group(2).strip()
-
-    data = None
+    entry: dict = {"at": time.time()}
     try:
-        level = int(info["BatteryCurrentCapacity"])
-        data = {
-            "level": max(0, min(100, level)),
+        entry.update({
+            "level": max(0, min(100, int(info["BatteryCurrentCapacity"]))),
             "charging": info.get("BatteryIsCharging", "").lower() == "true",
             "external": info.get("ExternalConnected", "").lower() == "true",
             "full": info.get("FullyCharged", "").lower() == "true",
-        }
+        })
     except (KeyError, ValueError):
-        data = None
-    _battery_cache[udid] = (now, data or {})
-    return data
+        pass
+    _battery[udid] = entry
+    return battery_cached(udid)
 
 
 # ---------- 备份加密 ----------

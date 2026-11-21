@@ -219,7 +219,8 @@ function clearLog() {
 
 /* 电量徽标：图标按百分比填充，充电中显示闪电并转绿，低电量未充电转琥珀色。
    取不到电量（离线 / 设备忙）就不渲染，不占位、不显示「—」。 */
-function battChip(b) {
+/* showAge：详情页有空间，正文里写「· N 分钟前」；首页卡片紧凑，时间只放 title */
+function battChip(b, showAge) {
   if (!b || b.level == null) return '';
   const level = Math.max(0, Math.min(100, b.level));
   const chg = !!(b.charging || b.external);
@@ -227,13 +228,17 @@ function battChip(b) {
   const w = Math.max(1.6, 14.2 * level / 100).toFixed(1);
   const bolt = chg ? '<svg class="bolt" viewBox="0 0 24 24" fill="currentColor">' +
     '<path d="M13.5 2 5 14h6l-1 8 9-12h-6l.5-8z"/></svg>' : '';
+  /* 无线设备 10 分钟才采一次（USB 60 秒），旧读数要标出时间，别被当成实时值 */
+  const mins = b.at ? Math.floor((Date.now() / 1000 - b.at) / 60) : 0;
+  const age = mins >= 2 ? mins + ' 分钟前' : '';
   return '<span class="batt ' + (chg ? 'chg' : low ? 'low' : '') + '" title="' +
-    (chg ? '充电中 · ' : '') + level + '%">' + bolt +
+    (chg ? '充电中 · ' : '') + level + '%' + (age ? ' · ' + age + '读取' : '') + '">' + bolt +
     '<svg viewBox="0 0 24 24" fill="none">' +
       '<rect x="2" y="7" width="18" height="10" rx="2.6" stroke="currentColor" stroke-width="1.4"/>' +
       '<path d="M21.6 10.4v3.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>' +
       '<rect x="4" y="9" width="' + w + '" height="6" rx="1.2" fill="currentColor"/>' +
-    '</svg><span>' + level + '%</span></span>';
+    '</svg><span>' + level + '%</span>' +
+    (age && showAge ? '<span style="color:var(--txt3);font-weight:400">· ' + age + '</span>' : '') + '</span>';
 }
 
 /* 进度更新：设备管理页的卡片进度带 + 总览「我的设备」的细进度条与徽标，
@@ -438,7 +443,8 @@ function renderDevices() {
         '<div style="padding:0 20px 20px;font-size:12.5px;color:var(--txt2);line-height:2.15">' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">连接方式</span><span>' + (CONN_LABEL[conn] || '未连接') + '</span></div>' +
           '<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--txt3)">电量</span>' +
-            (d.battery ? battChip(d.battery) : '<span style="color:var(--txt3)">未取到</span>') + '</div>' +
+            (d.battery ? battChip(d.battery, true)
+              : '<span style="color:var(--txt3)">' + (d.battery_pending ? '读取中…' : '未取到') + '</span>') + '</div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">UDID</span><span class="num">···' + esc(d.udid.slice(-12)) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">配对时间</span><span>' + fmtTs(d.paired_at) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between"><span style="color:var(--txt3)">上次备份</span><span>' + (d.last_backup_at ? fmtTs(d.last_backup_at) : '从未备份') + '</span></div>' +
@@ -993,7 +999,10 @@ async function cancelJob() {
 function renderHistory() {
   const body = $('histBody');
   body.innerHTML = '';
-  const backups = state.backups.slice(0, 12);
+  /* 运行中的任务由上面 active_jobs 那几行表达（带实时进度）。DB 里同一笔记录
+     的状态也是 RUNNING，一起渲染就会出现两行「同一个任务」：一行有进度、
+     一行只有「进行中」。所以这里滤掉，只留已收尾的。 */
+  const backups = state.backups.filter(s => s.status !== 'RUNNING').slice(0, 12);
   const running = state.status.active_jobs || [];
   if (!backups.length && !running.length) {
     body.innerHTML = '<tr><td colspan="7" class="empty">暂无任务记录，完成首次备份后会显示在这里</td></tr>';

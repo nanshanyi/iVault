@@ -365,6 +365,8 @@ class Job:
             return
         self.finalized = True
         self.status = status
+        # 跑完一轮电量必然变了，旧读数作废；有人看页面或调度器需要时再查
+        device.battery_forget(self.udid)
         if status != "DONE":
             # 失败/取消也留一句小结：没跑完的备份最需要知道「动了多少、花了多久」
             label = "已取消" if status == "CANCELED" else "失败"

@@ -189,7 +189,8 @@ async def logout():
 
 
 _pair_sessions: dict[str, device.PairSession] = {}
-_state = {"online_devices": [], "transports": {}, "boot_at": time.time()}
+_state = {"online_devices": [], "transports": {}, "boot_at": time.time(),
+          "viewer_at": 0.0}     # 最近一次有页面拉设备列表的时间（电量采样据此判断有没有人在看）
 
 # 宿主机系统标识的候选来源（厂商无关）：
 #   /host-os-release      compose 可选挂载的宿主机 /etc/os-release
@@ -288,6 +289,7 @@ async def startup():
     except Exception as e:  # noqa: BLE001
         log.warning("对账历史备份记录失败：%s", e)
     asyncio.create_task(_device_poller())
+    asyncio.create_task(_battery_sampler())
     asyncio.create_task(_scheduler_loop())
     log.info("iVault 启动完成，备份目录=%s", config.BACKUP_DIR)
 
@@ -295,9 +297,16 @@ async def startup():
 async def _refresh_transports() -> None:
     """刷新在线设备与各自的连接方式（USB / 无线）。"""
     devs = await device.scan_devices()
+    old = _state["transports"]
+    new = {d["udid"]: d["connection"] for d in devs}
+    # 离线或换了连接方式时旧电量作废：无线换成 USB 就是插上线开始充电了，
+    # 留着旧读数的话，调度器要等它过期（无线 10 分钟）才发现可以备份
+    for udid in set(old) | set(new):
+        if old.get(udid) != new.get(udid):
+            device.battery_forget(udid)
     _state["online_devices"] = [d["udid"] for d in devs]
-    _state["transports"] = {d["udid"]: d["connection"] for d in devs}
-    device.set_transports(_state["transports"])   # 命令层据此决定是否加 -n
+    _state["transports"] = new
+    device.set_transports(new)   # 命令层据此决定是否加 -n
 
 
 async def _device_poller():
@@ -308,6 +317,37 @@ async def _device_poller():
         except Exception as e:
             log.warning("device poller: %s", e)
         await asyncio.sleep(3)
+
+
+# 页面最后一次拉设备列表之后这么久内算「有人在看」（前端 6 秒轮询一次）
+VIEWER_ACTIVE_S = 30
+_viewer_wake = asyncio.Event()
+
+
+async def _battery_sampler():
+    """只在有页面开着时给卡片采电量：USB 60 秒、无线 10 分钟一次（见 device.BATTERY_MAX_AGE_*）。
+
+    没人看页面时一次都不查。调度器和手动备份要电量时自己按需现查，不靠这里。
+    读数过期的设备并发去查，慢的无线设备不会拖住其他设备。
+    """
+    while True:
+        try:
+            if time.time() - _state["viewer_at"] < VIEWER_ACTIVE_S:
+                # 只采已配对的：插着线但还没配对（或刚取消配对）的手机，ideviceinfo
+                # 连不上 lockdown 只会白跑，还可能和配对向导抢同一台设备
+                paired = {d["udid"] for d in store.list_devices()}
+                stale = [u for u in _state["online_devices"]
+                         if u in paired and device.battery_stale(u)]
+                if stale:
+                    await asyncio.gather(*(device.battery_refresh(u) for u in stale))
+        except Exception as e:  # noqa: BLE001
+            log.warning("battery sampler: %s", e)
+        # 页面刚打开时由 /api/devices 立刻叫醒，不必等满 5 秒
+        try:
+            await asyncio.wait_for(_viewer_wake.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        _viewer_wake.clear()
 
 
 @app.get("/api/status")
@@ -341,6 +381,10 @@ def shutil_disk_free(path: str) -> int:
 
 @app.get("/api/devices")
 async def devices():
+    now = time.time()
+    if now - _state["viewer_at"] >= VIEWER_ACTIVE_S:
+        _viewer_wake.set()                       # 停了一阵后第一次有人看：马上开始采样
+    _state["viewer_at"] = now
     out = []
     for d in store.list_devices():
         conn = _state["transports"].get(d["udid"])
@@ -354,8 +398,11 @@ async def devices():
         # size_bytes 都是整个备份目录的大小（增量也写同一目录），
         # 按条数求和会把同一份数据成倍虚高（60GB 手机备份 5 次显示 300GB）。
         d["total_bytes"] = completed[0]["size_bytes"] if completed else 0
-        # 电量：只对在线设备查（离线查必然超时），带 15 秒缓存，查不到就不给字段
-        d["battery"] = await device.battery_info(d["udid"]) if d["online"] else None
+        # 电量只读缓存，不在请求里拉进程：一台无线设备超时会把整个列表拖住 6 秒。
+        # 读数由 _battery_sampler 在后台补，带 at（采样时间），前端据此标注「N 分钟前」
+        d["battery"] = device.battery_cached(d["udid"]) if d["online"] else None
+        # 在线但还没采过：首屏时采样器刚被叫醒，前端显示「读取中…」而不是「未取到」
+        d["battery_pending"] = d["online"] and not device.battery_sampled(d["udid"])
         out.append(d)
     return out
 
@@ -366,6 +413,7 @@ async def remove_device(udid: str):
     # 但它本身只需要 UDID，所以顺序不影响；这里保留先撤销的语义。
     r = await device.unpair(udid)
     store.remove_device(udid)
+    device.battery_forget(udid)
     return {
         "ok": True,
         "trust_revoked": r.get("trust_revoked", False),
@@ -420,8 +468,11 @@ async def pair_events(sid: str):
 
 # ---------------- 备份 ----------------
 
-async def _battery_block_reason(udid: str) -> str | None:
+async def _battery_block_reason(udid: str, max_age: float | None = 0) -> str | None:
     """电量过低且未接电源时返回拒绝原因，否则 None。
+
+    max_age=0（手动备份）总是现查；调度器传 None，按连接方式复用未过期的读数
+    （USB 60 秒、无线 10 分钟），被电量拦住的无线设备因此最多 10 分钟查一次。
 
     取不到电量时一律放行：这条检查是「避免备份跑到一半没电」，不是安全边界，
     不能因为查询失败（设备忙、字段缺失）就把正常备份挡在门外。
@@ -429,7 +480,9 @@ async def _battery_block_reason(udid: str) -> str | None:
     """
     if config.MIN_BATTERY <= 0:
         return None
-    b = await device.battery_info(udid, ttl=5)
+    b = device.battery_cached(udid)
+    if device.battery_stale(udid, max_age):
+        b = await device.battery_refresh(udid)
     if not b or b["level"] >= config.MIN_BATTERY or b["charging"] or b["external"]:
         return None
     return (f"电量仅 {b['level']}%，低于 {config.MIN_BATTERY}% 且未在充电。"
@@ -746,10 +799,6 @@ async def test_webhook(body: dict | None = None):
 # 不设上限的话，磁盘满这类必然失败的原因会每 20 秒起一个任务、发一条失败通知。
 SCHED_MAX_ATTEMPTS = 3
 SCHED_RETRY_GAP = 1800
-# 电量不足被拦下后，这么久之内不再重复查这台设备。
-# 循环是 20 秒一轮，而电量查询的 TTL 只有 5 秒——不冷却的话，一台插着线
-# 但电量始终偏低的设备会让 ideviceinfo 一天被拉起三千多次。
-BATTERY_RECHECK_GAP = 600
 
 
 def _sched_due(udid: str, since: int, now: float) -> bool:
@@ -783,7 +832,6 @@ async def _scheduler_loop():
     失败按 _sched_due 的规则有限次重试。
     """
     battery_logged: set[str] = set()      # 电量不足的跳过日志：每台设备每天只记一次
-    battery_next: dict[str, float] = {}   # 该设备下次允许再查电量的时间（冷却）
     logged_day = ""
     while True:
         try:
@@ -795,7 +843,6 @@ async def _scheduler_loop():
                 now = time.time()
                 if today.isoformat() != logged_day:
                     logged_day, battery_logged = today.isoformat(), set()
-                    battery_next.clear()
                 if now >= since:
                     for d in store.list_devices():
                         udid = d["udid"]
@@ -804,14 +851,12 @@ async def _scheduler_loop():
                             continue
                         if not _sched_due(udid, since, now):
                             continue
-                        # 上一次判定电量不足，冷却期内不重复查询（见 BATTERY_RECHECK_GAP）
-                        if now < battery_next.get(udid, 0):
-                            continue
                         # 电量过低且没接电源：这一轮跳过（不写失败记录），充上电后自然补跑。
                         # 定时任务没人盯着，跑到一半没电最容易留下半截备份。
-                        reason = await _battery_block_reason(udid)
+                        # max_age=None：复用未过期读数，被拦住的无线设备最多 10 分钟查一次；
+                        # 插上线时连接方式变化会作废读数，下一轮（20 秒内）就能放行。
+                        reason = await _battery_block_reason(udid, max_age=None)
                         if reason:
-                            battery_next[udid] = now + BATTERY_RECHECK_GAP
                             if udid not in battery_logged:
                                 battery_logged.add(udid)
                                 log.warning("定时备份暂缓 %s：%s", udid, reason)
