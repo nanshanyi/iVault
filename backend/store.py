@@ -24,10 +24,14 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE TABLE IF NOT EXISTS backups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     udid TEXT NOT NULL,
+    -- BACKUP | RESTORE：恢复任务也记在这张表里，任务历史与日志回看共用一套
+    kind TEXT NOT NULL DEFAULT 'BACKUP',
+    -- 恢复时读的是谁的备份目录（同机恢复等于 udid）；备份任务为空
+    source_udid TEXT DEFAULT '',
     started_at INTEGER,
     finished_at INTEGER,
     size_bytes INTEGER DEFAULT 0,
-    type TEXT DEFAULT 'FULL',
+    type TEXT DEFAULT 'FULL',          -- FULL | INCREMENTAL，只对 BACKUP 有意义
     status TEXT DEFAULT 'RUNNING',
     note TEXT DEFAULT '',
     error TEXT DEFAULT '',
@@ -96,7 +100,7 @@ def latest_complete_backups() -> list[dict]:
         """SELECT b.udid, b.id, b.started_at, b.finished_at, b.size_bytes
            FROM backups b
            JOIN (SELECT udid, MAX(id) AS mid FROM backups
-                 WHERE status='COMPLETE' GROUP BY udid) t ON b.id = t.mid
+                 WHERE status='COMPLETE' AND kind='BACKUP' GROUP BY udid) t ON b.id = t.mid
            ORDER BY b.finished_at DESC, b.id DESC"""
     ).fetchall()
     return [dict(r) for r in rows]
@@ -121,10 +125,12 @@ def get_device(udid: str) -> dict | None:
 
 # ---------- backups ----------
 
-def create_backup(udid: str, backup_type="FULL", note="") -> int:
+def create_backup(udid: str, backup_type="FULL", note="", kind="BACKUP",
+                  source_udid="") -> int:
     cur = conn().execute(
-        "INSERT INTO backups (udid, started_at, type, status, note) VALUES (?,?,?,'RUNNING',?)",
-        (udid, int(time.time()), backup_type, note),
+        "INSERT INTO backups (udid, kind, source_udid, started_at, type, status, note) "
+        "VALUES (?,?,?,?,?,'RUNNING',?)",
+        (udid, kind, source_udid, int(time.time()), backup_type, note),
     )
     conn().commit()
     return cur.lastrowid
@@ -195,19 +201,39 @@ def get_backup(backup_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def list_backups(udid: str | None = None, limit=100) -> list[dict]:
-    """列表不返回 log 全文（单条可达几十 KB），只给 has_log 供前端决定是否显示入口。"""
-    cols = ("id, udid, started_at, finished_at, size_bytes, type, status, note, error, "
+def list_backups(udid: str | None = None, limit=100, backups_only: bool = False) -> list[dict]:
+    """列表不返回 log 全文（单条可达几十 KB），只给 has_log 供前端决定是否显示入口。
+
+    恢复任务也记在这张表里（kind='RESTORE'）。凡是用来判断
+    「有没有成功备份」的调用方都要传 backups_only=True，否则一次成功的恢复会被
+    当成一份可恢复的备份。
+    """
+    cols = ("id, udid, kind, source_udid, started_at, finished_at, size_bytes, type, status, note, error, "
             "CASE WHEN log IS NULL OR log='' THEN 0 ELSE 1 END AS has_log")
+    where, args = [], []
     if udid:
-        rows = conn().execute(
-            f"SELECT {cols} FROM backups WHERE udid=? ORDER BY started_at DESC, id DESC LIMIT ?",
-            (udid, limit),
-        ).fetchall()
-    else:
-        rows = conn().execute(
-            f"SELECT {cols} FROM backups ORDER BY started_at DESC, id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        where.append("udid=?")
+        args.append(udid)
+    if backups_only:
+        where.append("kind='BACKUP'")
+    sql = f"SELECT {cols} FROM backups"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    rows = conn().execute(sql + " ORDER BY started_at DESC, id DESC LIMIT ?",
+                          (*args, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def backup_attempts_since(udid: str, ts: int) -> list[dict]:
+    """某台设备在 ts 之后开始或结束的备份记录（不含恢复），定时补跑据此判断今天还欠不欠一次。
+
+    算上「结束于 ts 之后」的：定时时刻前开跑、之后才完成的备份也算今天这一轮。
+    """
+    rows = conn().execute(
+        "SELECT status, started_at, finished_at FROM backups "
+        "WHERE udid=? AND kind='BACKUP' AND (started_at>=? OR finished_at>=?) ORDER BY id",
+        (udid, ts, ts),
+    ).fetchall()
     return [dict(r) for r in rows]
 
 

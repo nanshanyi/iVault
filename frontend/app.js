@@ -280,7 +280,7 @@ function renderHeat(backups) {
   h.innerHTML = '';
   const byDay = {};
   backups.forEach(s => {
-    if (s.status === 'COMPLETE' && s.finished_at) {
+    if (s.status === 'COMPLETE' && s.kind !== 'RESTORE' && s.finished_at) {
       const d = new Date(s.finished_at * 1000);
       const k = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
       byDay[k] = (byDay[k] || 0) + 1;
@@ -322,11 +322,13 @@ function renderDashboard() {
   const devs = state.devices, backups = state.backups;
   const total = devs.reduce((a, d) => a + (d.total_bytes || 0), 0);
   $('stTotal').textContent = fmtSize(total);
-  $('stTotalSub').textContent = devs.length + ' 台设备 · ' + backups.filter(s => s.status === 'COMPLETE').length + ' 条备份记录';
+  /* 恢复任务也在 backups 里（kind=RESTORE），统计「备份」时要排除 */
+  const okBackups = backups.filter(s => s.status === 'COMPLETE' && s.kind !== 'RESTORE');
+  $('stTotalSub').textContent = devs.length + ' 台设备 · ' + okBackups.length + ' 条备份记录';
   $('stDevices').textContent = devs.length;
   const online = devs.filter(d => d.online).length;
   $('stDevicesSub').textContent = online + ' 台在线 · ' + (devs.length - online) + ' 台离线';
-  const last = backups.find(s => s.status === 'COMPLETE');
+  const last = okBackups[0];
   $('stLast').textContent = last ? fmtTs(last.finished_at) : '尚无备份';
   $('stLastSub').textContent = last ? ((last.type === 'FULL' ? '全量' : '增量') + ' · ' + fmtSize(last.size_bytes)) : '完成首次配对后即可开始备份';
   $('stFree').textContent = fmtSize(state.status.disk_free_bytes);
@@ -379,11 +381,14 @@ function renderDashboard() {
   tl.innerHTML = '';
   if (!backups.length) tl.innerHTML = '<div class="tl-item"><div class="t">暂无备份记录</div><div class="d">完成首次备份后，这里会显示动态</div></div>';
   backups.slice(0, 5).forEach(s => {
-    const label = s.status === 'COMPLETE' ? '备份完成' : s.status === 'FAILED' ? '备份失败' : s.status === 'CANCELED' ? '已取消' : '进行中';
+    const isR = s.kind === 'RESTORE', verb = isR ? '恢复' : '备份';
+    const label = s.status === 'COMPLETE' ? verb + '完成' : s.status === 'FAILED' ? verb + '失败' : s.status === 'CANCELED' ? '已取消' : '进行中';
     const cls = s.status === 'COMPLETE' ? 'ok' : s.status === 'FAILED' ? 'warn' : '';
     tl.insertAdjacentHTML('beforeend',
       '<div class="tl-item ' + cls + '"><div class="t">' + esc(devName(s.udid)) + ' ' + label + '</div>' +
-      '<div class="d">' + fmtTs(s.started_at) + ' · ' + (s.type === 'FULL' ? '全量' : '增量') + ' · ' + fmtSize(s.size_bytes) + '</div></div>');
+      '<div class="d">' + fmtTs(s.started_at) + ' · ' +
+        (isR ? '来自「' + esc(devName(s.source_udid || s.udid)) + '」的备份'
+             : (s.type === 'FULL' ? '全量' : '增量') + ' · ' + fmtSize(s.size_bytes)) + '</div></div>');
   });
 }
 
@@ -466,7 +471,7 @@ function renderDevices() {
             /* 任务跑着的时候再点「立即备份」只会撞上「设备忙」，直接给进度入口 */
             ? '<button class="btn primary" style="flex:1;justify-content:center" onclick="go(\'tasks\')">' + (srcJob ? '恢复进度' : '查看进度') + '</button>'
             : '<button class="btn primary" style="flex:1;justify-content:center" onclick="startBackup(\'' + esc(d.udid) + '\')"' + (live ? '' : ' disabled') + '>立即备份</button>') +
-          '<button class="btn" onclick="go(\'tasks\')">台账</button>' +
+          '<button class="btn" onclick="go(\'tasks\')">历史</button>' +
           '<button class="btn danger"' + (busy ? ' disabled title="任务进行中，取消配对会中断任务"' : '') + ' onclick="removeDevice(\'' + esc(d.udid) + '\')">取消配对</button>' +
         '</div></div>');
   });
@@ -982,8 +987,8 @@ async function cancelJob() {
   } catch (e) { toast('取消失败：' + e.message); }
 }
 
-/* ---------- 任务台账 + 当前可恢复 ---------- */
-/* 台账：每次任务一行，只增不改。恢复入口不在这里——磁盘上只有一份可恢复状态，
+/* ---------- 任务历史 + 当前可恢复 ---------- */
+/* 历史：每次任务一行，只增不改。恢复入口不在这里——磁盘上只有一份可恢复状态，
    挂在某条历史记录上会让人以为能选时间点。 */
 function renderHistory() {
   const body = $('histBody');
@@ -998,7 +1003,8 @@ function renderHistory() {
   running.forEach(j => {
     body.insertAdjacentHTML('beforeend',
       '<tr><td data-label="设备"><b>' + esc(devName(j.udid)) + '</b></td>' +
-      '<td data-label="类型"><span class="badge b">进行中</span></td>' +
+      '<td data-label="类型">' + (j.kind === 'RESTORE'
+        ? '<span class="badge p">恢复</span>' : '<span class="badge b">备份</span>') + '</td>' +
       '<td data-label="开始时间" class="num">当前</td><td data-label="耗时" class="num">—</td>' +
       '<td data-label="进度" class="num">' + (j.progress || 0) + '%</td>' +
       '<td data-label="状态"><span class="badge g">运行中</span></td>' +
@@ -1015,14 +1021,26 @@ function renderHistory() {
     const delBtn = s.status === 'RUNNING' ? ''
       : '<button class="btn ghost" style="font-size:12px;color:var(--txt3)" onclick="deleteBackup(' + s.id + ')" title="只删除这条记录，不动磁盘数据">删除</button>';
     body.insertAdjacentHTML('beforeend',
-      '<tr><td data-label="设备"><b>' + esc(devName(s.udid)) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">BKP-' + String(s.id).padStart(4, '0') + '</div></td>' +
-      '<td data-label="类型"><span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span></td>' +
+      '<tr><td data-label="设备"><b>' + esc(devName(s.udid)) + '</b><div style="font-size:11px;color:var(--txt3);margin-top:3px" class="num">' +
+        (s.kind === 'RESTORE' ? 'RST-' : 'BKP-') + String(s.id).padStart(4, '0') + '</div></td>' +
+      '<td data-label="类型">' + typeBadge(s) + '</td>' +
       '<td data-label="开始时间" class="num">' + fmtTs(s.started_at) + '</td>' +
       '<td data-label="耗时" class="num">' + fmtDur(dur) + '</td>' +
-      '<td data-label="数据量" class="num">' + fmtSize(s.size_bytes) + '</td>' +
+      /* 恢复不产生备份数据，数据量一栏没有意义 */
+      '<td data-label="数据量" class="num">' + (s.kind === 'RESTORE' ? '—' : fmtSize(s.size_bytes)) + '</td>' +
       '<td data-label="状态"><span class="badge ' + badge + '">' + label + '</span></td>' +
       '<td data-label="操作" style="text-align:right;white-space:nowrap">' + logBtn + delBtn + '</td></tr>');
   });
+}
+
+/* 任务历史的「类型」列：备份分全量/增量；恢复是换机（来源≠目标）时注明来源 */
+function typeBadge(s) {
+  if (s.kind === 'RESTORE') {
+    const cross = s.source_udid && s.source_udid !== s.udid;
+    return '<span class="badge p">' + (cross ? '换机恢复' : '恢复') + '</span>' +
+      (cross ? '<div style="font-size:11px;color:var(--txt3);margin-top:3px">来自「' + esc(devName(s.source_udid)) + '」</div>' : '');
+  }
+  return '<span class="badge ' + (s.type === 'FULL' ? 'a' : 'b') + '">' + (s.type === 'FULL' ? '全量' : '增量') + '</span>';
 }
 
 /* 当前可恢复：每份备份来源一行（含已取消配对的旧手机，换机时要用它）。
@@ -1204,7 +1222,7 @@ function toggleEncryption(udid) {
   });
 }
 async function deleteBackup(id) {
-  if (!confirm('删除备份记录 #' + id + '？\n注意：磁盘上目前只保留最新一次可恢复状态，删除记录只是移除展示条目，不会释放磁盘空间。')) return;
+  if (!confirm('删除任务记录 #' + id + '？\n注意：磁盘上目前只保留最新一次可恢复状态，删除记录只是移除展示条目，不会释放磁盘空间。')) return;
   try {
     await api('/api/backups/' + id, { method: 'DELETE' });
     toast('记录已删除');

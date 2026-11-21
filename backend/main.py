@@ -346,7 +346,7 @@ async def devices():
         conn = _state["transports"].get(d["udid"])
         d["online"] = conn is not None
         d["connection"] = conn or "offline"      # usb / network / offline
-        snaps = store.list_backups(d["udid"], limit=500)
+        snaps = store.list_backups(d["udid"], limit=500, backups_only=True)
         completed = [s for s in snaps if s["status"] == "COMPLETE"]
         d["encrypted"] = bool(d.get("encrypted"))
         d["backup_count"] = len(completed)
@@ -501,7 +501,7 @@ async def trigger_restore(body: dict):
     if not store.get_device(udid):
         raise HTTPException(409, "目标设备还没有配对：新手机请先在「设备管理」里添加设备")
     if not any(s["status"] == "COMPLETE"
-               for s in store.list_backups(source, limit=500)):
+               for s in store.list_backups(source, limit=500, backups_only=True)):
         raise HTTPException(409, "还没有可恢复的成功备份，请先完成一次备份")
     meta = jobs.backup_meta(source)
     if not meta:
@@ -650,7 +650,7 @@ async def diagnostics():
     add("--- 最近备份记录 ---")
     for s in store.list_backups(limit=8):
         flag = ("  " + (s.get("error") or "")[:80]) if s.get("error") else ""
-        add(f"#{s['id']} {s['status']} {datetime.datetime.fromtimestamp(s['started_at']).strftime('%m-%d %H:%M')}"
+        add(f"#{s['id']} {s['kind']} {s['status']} {datetime.datetime.fromtimestamp(s['started_at']).strftime('%m-%d %H:%M')}"
             f" {human_size(s['size_bytes'])}{flag}")
     add("")
     add("--- 最近告警/错误（内存中最近 200 条） ---")
@@ -682,6 +682,13 @@ async def backups(udid: str | None = None):
 
 @app.delete("/api/backups/{backup_id}")
 async def del_backup(backup_id: int):
+    cur = store.get_backup(backup_id)
+    if not cur:
+        raise HTTPException(404, "记录不存在")
+    # 进行中的记录不能删：任务收尾时会按 id 回写状态和日志，记录没了这些就静默丢失，
+    # 任务历史里也看不到这次任务。前端已隐藏按钮，这里防直接调接口。
+    if cur["status"] == "RUNNING":
+        raise HTTPException(409, "任务还在进行中，结束后才能删除这条记录")
     rec = store.delete_backup(backup_id)
     if not rec:
         raise HTTPException(404, "记录不存在")
@@ -701,7 +708,7 @@ async def put_settings(body: dict):
     allowed = {"schedule_enabled", "schedule_time", "notify_webhook", "notify_scope", "log_verbose"}
     # 校验并规范化：时间统一成 HH:MM。
     # 没有「保留份数」之类的设置：备份是单目录覆盖模式，磁盘上始终只有
-    # 最新一次可恢复状态，历史记录就是任务台账，不回收也不需要配置。
+    # 最新一次可恢复状态，历史记录只记账不回收，也不需要配置。
     if "schedule_time" in body:
         m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(body["schedule_time"]).strip())
         if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
@@ -735,34 +742,87 @@ async def test_webhook(body: dict | None = None):
     return {"ok": True}
 
 
+# 定时备份失败后的补跑：当天最多试这么多次，两次之间至少隔这么久。
+# 不设上限的话，磁盘满这类必然失败的原因会每 20 秒起一个任务、发一条失败通知。
+SCHED_MAX_ATTEMPTS = 3
+SCHED_RETRY_GAP = 1800
+# 电量不足被拦下后，这么久之内不再重复查这台设备。
+# 循环是 20 秒一轮，而电量查询的 TTL 只有 5 秒——不冷却的话，一台插着线
+# 但电量始终偏低的设备会让 ideviceinfo 一天被拉起三千多次。
+BATTERY_RECHECK_GAP = 600
+
+
+def _sched_due(udid: str, since: int, now: float) -> bool:
+    """今天的定时备份对这台设备是否还欠着。
+
+    看的是设定时刻之后的备份记录（手动备份也算）：
+      · 已有成功的        → 今天的已完成
+      · 有被取消的        → 用户主动叫停，今天不再自动重来
+      · 失败满 3 次        → 放弃到明天，避免反复失败刷通知
+      · 上次失败不到 30 分钟 → 等一等再补
+    """
+    tries = store.backup_attempts_since(udid, since)
+    if any(t["status"] in ("COMPLETE", "CANCELED", "RUNNING") for t in tries):
+        return False
+    failed = [t for t in tries if t["status"] == "FAILED"]
+    if len(failed) >= SCHED_MAX_ATTEMPTS:
+        return False
+    if failed:
+        last = failed[-1]["finished_at"] or failed[-1]["started_at"] or 0
+        if now - last < SCHED_RETRY_GAP:
+            return False
+    return True
+
+
 async def _scheduler_loop():
-    """每天到达设定时间，对所有在线设备触发备份。"""
+    """每天到设定时刻之后，给当天还没成功备份过的在线设备跑一次备份。
+
+    以前只在「当前分钟 == 设定时刻」那一下触发，并且先写 _last_run 再看设备：
+    03:00 手机恰好在 Wi-Fi 休眠或没插线，当天就整天不备份，失败了也不再试。
+    现在设定时刻到午夜之间都是补跑窗口：设备什么时候上线、什么时候补上，
+    失败按 _sched_due 的规则有限次重试。
+    """
+    battery_logged: set[str] = set()      # 电量不足的跳过日志：每台设备每天只记一次
+    battery_next: dict[str, float] = {}   # 该设备下次允许再查电量的时间（冷却）
+    logged_day = ""
     while True:
         try:
             if store.get_setting("schedule_enabled") in ("1", "true", "True"):
-                hhmm = store.get_setting("schedule_time") or "03:00"
-                now = datetime.datetime.now().strftime("%H:%M")
-                today = datetime.date.today().isoformat()
-                if now == hhmm and store.get_setting("_last_run") != today:
-                    store.set_setting("_last_run", today)
+                hh, mm = (store.get_setting("schedule_time") or "03:00").split(":")
+                today = datetime.date.today()
+                since = int(datetime.datetime.combine(
+                    today, datetime.time(int(hh), int(mm))).timestamp())
+                now = time.time()
+                if today.isoformat() != logged_day:
+                    logged_day, battery_logged = today.isoformat(), set()
+                    battery_next.clear()
+                if now >= since:
                     for d in store.list_devices():
-                        if d["udid"] not in _state["online_devices"]:
+                        udid = d["udid"]
+                        # 手动备份 / 恢复 / 改加密正在进行时让路，下一轮再看
+                        if udid not in _state["online_devices"] or jobs.busy_job(udid):
                             continue
-                        # 电量过低且没接电源：跳过这一次（不写失败记录）。
+                        if not _sched_due(udid, since, now):
+                            continue
+                        # 上一次判定电量不足，冷却期内不重复查询（见 BATTERY_RECHECK_GAP）
+                        if now < battery_next.get(udid, 0):
+                            continue
+                        # 电量过低且没接电源：这一轮跳过（不写失败记录），充上电后自然补跑。
                         # 定时任务没人盯着，跑到一半没电最容易留下半截备份。
-                        reason = await _battery_block_reason(d["udid"])
+                        reason = await _battery_block_reason(udid)
                         if reason:
-                            log.warning("定时备份跳过 %s：%s", d["udid"], reason)
+                            battery_next[udid] = now + BATTERY_RECHECK_GAP
+                            if udid not in battery_logged:
+                                battery_logged.add(udid)
+                                log.warning("定时备份暂缓 %s：%s", udid, reason)
                             continue
-                        # 手动备份 / 恢复正在跑时，定时任务让路：
-                        # 以前这里直接调 start_backup，绕过端点的占用检查，
-                        # 会在同一台设备上并出第二个进程写同一个目录。
+                        # 设备互斥仍由 jobs._claim 裁决，这里只接住 DeviceBusy
                         try:
-                            jobs.start_backup(d["udid"], job_id=uuid.uuid4().hex)
-                            log.info("定时备份已触发: %s", d["udid"])
+                            jobs.start_backup(udid, job_id=uuid.uuid4().hex)
+                            log.info("定时备份已触发: %s", udid)
                         except jobs.DeviceBusy:
-                            log.info("定时备份跳过 %s：已有进行中的任务", d["udid"])
-                    # 这里不再发 webhook：任务结果（成功/失败/取消）由 notify
+                            pass
+                    # 这里不发 webhook：任务结果（成功/失败/取消）由 notify
                     # 在每个任务收尾时推送，触发通知只会制造噪音。
         except Exception as e:
             log.warning("scheduler: %s", e)

@@ -549,7 +549,7 @@ td b{color:var(--txt);font-weight:600}
   .dev-card .badge{font-size:10px;padding:2px 7px}
   .batt{font-size:10.5px;gap:3px}
   .batt svg{width:19px;height:19px}
-  /* 三个操作按钮在手机上分两行：备份占一行，台账/取消配对并排 */
+  /* 三个操作按钮在手机上分两行：备份占一行，历史/取消配对并排 */
   .dev-actions{padding:12px 14px;gap:8px}
   .dev-actions .btn{flex:1;justify-content:center;padding-left:10px;padding-right:10px}
   .heat{gap:3px}
@@ -584,7 +584,7 @@ td b{color:var(--txt);font-weight:600}
 
   .toast{bottom:calc(78px + var(--safe-b))}
 
-  /* —— 任务台账：7 列表格 → 卡片 ——
+  /* —— 任务历史：7 列表格 → 卡片 ——
      表格在 320–640px 之间没有不失真的排法（7 列最窄也要 620px），
      硬塞只会文字折行、按钮错位。改成「字段名 : 值」的竖向卡片，
      一屏能看清两三条，翻找比横向拖动快。
@@ -764,12 +764,12 @@ td b{color:var(--txt);font-weight:600}
     <div id="restoreList"></div>
     <div style="font-size:11.5px;color:var(--txt3);line-height:1.85;margin-top:12px;border-top:1px solid var(--stroke);padding-top:12px">
       备份按设备写入同一个目录，磁盘上只保留<strong style="color:var(--txt2)">最新一次可恢复状态</strong>；
-      恢复永远只能回到这一份。下面的台账记录每一次任务，删除记录不会释放磁盘空间
+      恢复永远只能回到这一份。下面的历史记录列出每一次任务，删除记录不会释放磁盘空间
     </div>
   </div>
   <div class="card" style="padding:0">
     <div style="padding:18px 20px;display:flex;justify-content:space-between;align-items:center">
-      <b style="font-size:14.5px">任务台账</b>
+      <b style="font-size:14.5px">任务历史</b>
       <span class="badge b" id="schedBadge">定时：—</span>
     </div>
     <div class="tbl-wrap">

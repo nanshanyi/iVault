@@ -454,10 +454,12 @@ class Job:
         if self._cancel_requested:
             await self._kill_proc()
             return -1
+        # 心跳必须在 try 之前起：放在里面的话，前面一行抛异常时
+        # finally 里的 hb.cancel() 会变成 NameError，把原始异常盖掉
+        hb = asyncio.create_task(self._heartbeat())
         try:
             assert self.proc.stdout
             buf = ""
-            hb = asyncio.create_task(self._heartbeat())
             # 用 read(n) 而不是 async for（后者按 \n 分帧）：进度条只发 \r，
             # 按行读会憋成一条巨型字符串，前端一次插入几 MB HTML 直接卡死，
             # 超长行还会触发 asyncio 的行长上限、把任务拽出循环。
@@ -504,7 +506,7 @@ class Job:
         # 增量与否的判断依据是「磁盘上是否已有成功完成的备份基线」，
         # 不是最近一条记录——上一轮失败后基线目录仍在，这轮实际跑的还是增量。
         # 只看最近 1 条会把「失败后的正常增量」误标成 FULL，界面因此说谎。
-        prior = store.list_backups(self.udid, limit=50)
+        prior = store.list_backups(self.udid, limit=50, backups_only=True)
         backup_type = "INCREMENTAL" if any(
             s["status"] == "COMPLETE" for s in prior
         ) else "FULL"
@@ -747,6 +749,15 @@ async def _run_restore(job: "Job"):
 
 
 async def _run_restore_inner(job: "Job"):
+    # 恢复也落一条记录（kind=RESTORE）：任务历史里要看得到它，
+    # 失败日志也要能事后回看。以前 backup_id 为空，_persist_log 直接跳过，
+    # 恢复失败的输出随 Job 对象一起丢掉。
+    job.backup_id = store.create_backup(job.udid, backup_type="", kind="RESTORE",
+                                       source_udid=job.source_udid)
+    if job._cancel_requested:
+        job._close_backup("CANCELED", error="启动前已取消")
+        job._finish("CANCELED")
+        return
     src = ["-s", job.source_udid] if job.source_udid != job.udid else []
     if src:
         job.add_log(f"换机恢复：读取 ····{job.source_udid[-6:]} 的备份，写入 ····{job.udid[-6:]}")
@@ -760,13 +771,16 @@ async def _run_restore_inner(job: "Job"):
         "restore", "--system", "--settings", "--remove", config.BACKUP_DIR,
     ])
     if job._cancel_requested or job.status == "CANCELED":
+        job._close_backup("CANCELED")
         job._finish("CANCELED")
     elif rc == 0:
         job.add_log(f"完成 · 本次传 {job._files_seen} 个文件 · 用时 {job._elapsed_text()}")
+        job._close_backup("COMPLETE")
         job._finish("DONE", progress=100)
     else:
-        job._finish("FAILED", error=_restore_error(rc, "\n".join(job.log_tail[-40:]),
-                                                   password_provided=bool(job._env)))
+        err = _restore_error(rc, "\n".join(job.log_tail[-40:]), password_provided=bool(job._env))
+        job._close_backup("FAILED", error=err)
+        job._finish("FAILED", error=err)
 
 
 def _restore_error(rc: int, tail: str, password_provided: bool) -> str:
