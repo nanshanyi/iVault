@@ -236,11 +236,30 @@ async def will_encrypt(udid: str) -> bool | None:
     return None
 
 
+def _device_error(out: str) -> str:
+    """从 idevicebackup2 输出里取出设备给出的失败原因（`ErrorCode 12: 描述`）。
+
+    设备把原因放在 ErrorDescription 里，工具原样打印成 `ErrorCode N: 描述`。
+    拿不到描述就返回空串——这种失败通常是用户在手机上没确认（没有错误码）。
+    """
+    m = re.search(r"ErrorCode\s+(-?\d+):\s*(.*)", out)
+    if not m:
+        return ""
+    desc = m.group(2).strip()
+    if not desc or desc.startswith("(Unknown)"):
+        return ""
+    return f"{desc}（设备错误码 {m.group(1)}）"
+
+
 async def set_encryption(udid: str, enable: bool, password: str) -> tuple[bool, str]:
     """开启或关闭备份加密，返回 (是否成功, 给用户看的说明)。
 
     iOS 13 起设备会要求在屏幕上输入锁屏密码确认，工具会一直等到用户确认或超时，
     所以超时放得很宽。密码经环境变量传入：开启时是新密码，关闭时是当前密码。
+
+    失败只有两种来源，必须分开说，否则用户不知道该去解锁还是该去翻密码：
+      · 设备返回 ErrorCode —— 密码不对、keybag 拒绝，原因由设备给
+      · 没有 ErrorCode      —— 手机上的确认弹窗没被处理（锁屏 / 没看见 / 取消了）
     """
     var = "BACKUP_PASSWORD_NEW" if enable else "BACKUP_PASSWORD"
     code, out = await _run(
@@ -256,12 +275,22 @@ async def set_encryption(udid: str, enable: bool, password: str) -> tuple[bool, 
     if "not enabled" in low:
         return False, "这台设备没有开启备份加密"
     if code == -1 and out.startswith("timeout"):
-        return False, "等待超时：请解锁手机，留意是否要求输入锁屏密码，然后重试"
+        return False, ("等待超时：手机没有确认这次修改。请先解锁 iPhone、让它停在桌面，"
+                       "重试时留意屏幕上的锁屏密码提示")
     if code in (126, 127):
         return False, out.strip()
-    if not enable:
-        return False, "关闭失败：备份密码可能不正确。忘记密码的话，只能在手机上「还原所有设置」来清除它"
-    return False, "开启失败：请确认手机已解锁，并在手机上输入了锁屏密码"
+    # 失败路径统一带一条服务端日志：设备输出里没有密码，只有错误描述，
+    # 下次出问题不用再靠猜「是没确认还是密码错」
+    log.warning("加密开关失败 %s（enable=%s rc=%s）：%s",
+                udid, enable, code, out.strip()[-400:])
+    detail = _device_error(out)
+    if detail:
+        return False, ("开启" if enable else "关闭") + f"失败：{detail}"
+    if enable:
+        return False, ("开启失败：手机没有确认这次修改。请解锁 iPhone 并停在桌面，"
+                       "在手机上输入锁屏密码后重试")
+    return False, ("关闭失败：手机没有确认，或备份密码不正确。请解锁 iPhone、"
+                   "看清屏幕提示后重试；忘记密码只能在手机上「还原所有设置」清除它")
 
 
 async def is_paired(udid: str) -> bool:
