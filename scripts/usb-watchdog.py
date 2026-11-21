@@ -350,6 +350,9 @@ def main():
     blind_since = None
     last_restart = 0.0
     restarts = []
+    # 「查不到任务状态」每分钟只记一次：盲区持续时循环是 3 秒一轮，
+    # 原样打印会把容器日志刷满，反而盖住真正有用的行
+    unknown_logged = 0.0
     # 启动宽限：entrypoint 在拉起 netmuxd 之后才启动本看护，这之前不做健康检查
     started_at = time.time()
     last_wifi_check = started_at
@@ -413,7 +416,9 @@ def main():
 
         busy = jobs_running()
         if busy is None:
-            log("无法确认任务状态，暂缓重启（下一轮再判断）")
+            if now - unknown_logged > 60:
+                unknown_logged = now
+                log("无法确认任务状态，暂缓重启（下一轮再判断）")
             continue
         if busy:
             log("检测到未识别的设备，但有备份任务在跑，暂缓重启")

@@ -134,6 +134,16 @@ def _check_token(token: str) -> bool:
     return hmac.compare_digest(sig, good)
 
 
+def _is_loopback(request: Request) -> bool:
+    """请求是否来自容器内的回环地址。
+
+    usb-watchdog 这类内部进程没有登录态，只能靠这个判断它确实在本机。
+    network_mode: host 下 127.0.0.1 是宿主机自身，局域网客户端不会命中。
+    """
+    host = request.client.host if request.client else ""
+    return host in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
 @app.middleware("http")
 async def _auth_guard(request: Request, call_next):
     # 写在 _access_log 之后注册 → 位于其外层：401 直接短路返回，
@@ -143,6 +153,11 @@ async def _auth_guard(request: Request, call_next):
     path = request.url.path
     if path == "/api/login" or not path.startswith("/api"):
         return await call_next(request)     # 登录接口与静态前端（登录页本身）放行
+    # usb-watchdog 是容器内的独立进程，重启 usbmuxd 前必须确认没有任务在跑，
+    # 而它拿不到登录 Cookie —— 只对回环地址放行这一个只读接口。
+    # 局域网客户端仍然需要登录，鉴权边界不变。
+    if path == "/api/status" and _is_loopback(request):
+        return await call_next(request)
     if _check_token(request.cookies.get(COOKIE_NAME, "")):
         return await call_next(request)
     return JSONResponse({"detail": "需要登录"}, status_code=401)

@@ -179,6 +179,8 @@ docker compose up -d     # 重启生效
 ```
 
 - 启用后所有 `/api/*` 接口（含 SSE 实时推送）都需要登录，未登录访问返回 401，页面自动弹出登录浮层
+  唯一例外是容器内回环地址读取 `GET /api/status`：`usb-watchdog` 重启 usbmuxd 前要确认没有任务在跑，
+  而它没有登录态。局域网客户端仍需登录
 - 登录态以 HttpOnly Cookie（`SameSite=Lax`）下发，默认 30 天有效（`IVAULT_SESSION_DAYS`，1–365）
 - **退出登录只清除浏览器里的 Cookie**：令牌在有效期内本身仍然有效，被复制走的 Cookie 可继续使用。要让所有会话立即失效，修改 `IVAULT_PASSWORD` 并重启容器即可
 - 密码支持任意字符（含中文）；登录接口带来源级限速：同一 IP 10 分钟内失败 8 次后暂时拒绝
