@@ -21,7 +21,6 @@
 <p align="center">
   <a href="https://github.com/nanshanyi/iVault/pkgs/container/ivault"><img src="https://img.shields.io/badge/image-ghcr.io%2Fnanshanyi%2Fivault-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white" alt="docker image"></a>
   <img src="https://img.shields.io/badge/platform-amd64-2496ED?style=flat-square&amp;logo=linux&amp;logoColor=white" alt="platform">
-  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="python">
   <img src="https://img.shields.io/badge/iOS-17%2B-000000?style=flat-square&amp;logo=apple&amp;logoColor=white" alt="iOS">
 </p>
 
@@ -33,34 +32,17 @@
 
 **跑在任何能运行 Docker 的 NAS 上**：群晖、威联通、绿联、飞牛、TrueNAS、Unraid、树莓派或普通 Linux 主机都可以。唯一的硬要求是容器能拿到 USB 总线（`privileged` + `/dev/bus/usb` 映射）。
 
-> 本项目与 Apple Inc. 无任何关联。
+<!-- 截图占位：把界面截图放到 assets/screenshot.png 后取消下面这行的注释
+<p align="center"><img src="assets/screenshot.png" width="860" alt="iVault 界面"></p>
+-->
 
-## 快速开始
+> [!WARNING]
+> iVault 还在早期开发阶段，请先读完这三条再用：
+> - **备份落盘还没在真机上完整联调**，恢复（含换机恢复）和加密开关也没在真机上验证过。恢复会覆盖整机数据，首次使用请用备用机测试。
+> - **磁盘上只有最新一份备份**。每次备份覆盖同一个目录，不能回到历史时间点。重要数据请另外再留一份（3-2-1 原则）。
+> - **默认不设密码**。服务以 `privileged` 运行，能触发恢复，请务必设置 `IVAULT_PASSWORD`（见[安全](#安全)）。
 
-```bash
-git clone https://github.com/nanshanyi/iVault.git && cd iVault
-chmod +x install.sh && ./install.sh
-```
-
-脚本会问你备份目录、元数据目录、端口和 Web 访问密码（强烈建议设置），然后**直接拉取预构建镜像启动**（`docker compose pull` + `up -d --no-build`），通常几十秒完成，不需要编译。
-
-浏览器打开 `http://<NAS-IP>:8666` → 用数据线把 iPhone 插到 **NAS 机身**的 USB 口（不是电脑）→ 设备管理 → 添加设备 → 手机上点「信任」→ 立即备份。
-
-> 备份进度到 100% 后别急着拔线，后端还要写完备份数据才算落盘，以页面上的任务状态为准。
-
-不想用脚本的话，手写三步：
-
-```bash
-cp .env.example .env      # 填 BACKUP_LOCATION / META_LOCATION
-mkdir -p /your/volume/ivault/{backups,data/lockdown}
-docker compose pull && docker compose up -d --no-build
-```
-
-> 路径按你自己的卷结构填：群晖和绿联常见 `/volume1/...`，威联通是 `/share/CACHEDEV1_DATA/...`，飞牛和普通 Linux 常见 `/vol1/...`、`/mnt/disk1/...`。
->
-> 部分 NAS 的 Docker 界面里除 `privileged` 外还有单独的「USB 设备直通」开关，也要打开。
->
-> 首次使用前请到 GitHub 仓库 **Settings → Packages** 把 `ghcr.io/nanshanyi/ivault` 的可见性改为 Public，否则 NAS 上 pull 前要先 `docker login ghcr.io`。
+本项目与 Apple Inc. 无任何关联。
 
 ## 功能
 
@@ -68,17 +50,91 @@ docker compose pull && docker compose up -d --no-build
 |---|---|
 | USB 首次配对 | 信任授权 + 证书持久化，重装容器不用重配 |
 | 全量 / 增量整机备份 | Apple MobileSync 格式，目录可直接拷到 Mac 用 Finder 恢复 |
-| 实时进度 | SSE 推送进度环、速率与终端日志，断线重连不丢状态 |
-| 备份任务 | 「当前可恢复」按设备列出最新一份可恢复备份（恢复入口在这里）；「任务历史」记录每次任务（含失败与取消）与完整日志 |
+| 实时进度 | SSE 推送进度环、已用时间与终端日志，断线重连不丢状态 |
+| 备份任务 | 「当前可恢复」列出每台设备最新一份可恢复备份；「任务历史」记录每次备份与恢复（含失败与取消）和完整日志 |
 | 换机恢复 | 把一台设备的备份恢复到另一台已配对的设备；旧手机取消配对后，它的备份仍可选作来源 |
 | 备份加密 | 在设备卡片上开启/关闭 iPhone 的备份加密；恢复加密备份时输入密码，密码不保存在 NAS 上 |
-| 定时备份 | 每天自选时刻，服务端调度；到点时设备不在线，当天上线后自动补跑；失败最多重试 3 次，间隔 30 分钟；手动取消后当天不再自动重来 |
+| 定时备份 | 每天自选时刻；到点时设备不在线、电量不足或失败，当天会自动补跑 |
 | Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
 | 访问密码 | `IVAULT_PASSWORD` 启用登录鉴权，HttpOnly Cookie 会话，SSE 同套保护 |
-| Webhook 通知 | 每次任务结束推送，失败带原因。Bark 填 `http://Bark服务器:端口/DeviceKey`；企业微信 / 飞书 / 钉钉群机器人按地址自动匹配格式；响应体业务码非 0 视为失败（测试不假成功） |
-| 设备状态 | 卡片显示电量与充电状态，低于阈值且未接电源时拒绝开始备份 |
+| Webhook 通知 | 每次任务结束推送结果，失败带原因；支持 Bark 与企业微信 / 飞书 / 钉钉群机器人 |
+| 设备状态 | 卡片显示连接方式、电量与充电状态；电量过低且未接电源时拒绝开始备份 |
 | 失败早发现 | 备份前检查磁盘剩余空间，低于阈值拒绝开始 |
 | 深浅色主题 | 跟随系统 / 手动切换 / 记忆选择 |
+
+## 快速开始
+
+NAS 上最省事的路径是 **Compose**：不用 `git`、不用编译，拉 CI 预构建好的镜像起容器即可。三步。
+
+### 1. 建目录、取两个文件
+
+```bash
+# 路径换成你自己的卷结构：群晖 / 绿联 /volume1/...、威联通 /share/CACHEDEV1_DATA/...、
+# 飞牛与普通 Linux 常见 /vol1/...、/mnt/disk1/...
+mkdir -p /volume1/docker/ivault && cd /volume1/docker/ivault
+
+curl -fsSLO https://raw.githubusercontent.com/nanshanyi/iVault/main/docker-compose.yml
+curl -fsSL -o .env https://raw.githubusercontent.com/nanshanyi/iVault/main/.env.example
+
+# 备份库与元数据目录提前建好：路径不存在时 Docker 会自动以 root 建一个空目录，
+# 路径写错也不报错，备份会悄悄写到别处
+mkdir -p /volume1/ivault/backups /volume1/ivault/data/lockdown
+```
+
+没有 `curl`（部分 NAS 系统比较精简）：用浏览器打开上面两个链接，把内容分别另存为 `docker-compose.yml` 和 `.env`，放进同一个目录。
+
+### 2. 改 `.env`
+
+| 变量 | 填什么 |
+|---|---|
+| `BACKUP_LOCATION` | 备份库所在的宿主机目录，如 `/volume1/ivault/backups` |
+| `META_LOCATION` | SQLite 与配对证书目录，如 `/volume1/ivault/data` |
+| `IVAULT_PASSWORD` | 你的 Web 访问密码，**强烈建议设置**（留空 = 局域网内任何人都能打开页面、触发备份或恢复） |
+
+两个路径都写**绝对路径**，并且和上一步 `mkdir` 创建的一致。`META_LOCATION` 删掉就等于丢了配对证书，下次要重新插线配对。
+
+### 3. 起容器
+
+```bash
+docker compose pull          # 拉预构建镜像，通常几十秒
+docker compose up -d --no-build
+```
+
+打开 `http://<NAS-IP>:8666`（端口由 `IVAULT_PORT` 决定，默认 8666）→ 用数据线把 iPhone 插到 **NAS 机身**的 USB 口（不是电脑）→ 设备管理 → 添加设备 → 手机上点「信任」→ 立即备份。
+
+> 进度到 100% 后别急着拔线，后端还要把备份写完才算落盘，以页面上的任务状态为准。
+
+### 在 NAS 的 Docker 图形界面里部署
+
+群晖 Container Manager 的「项目」、威联通 Container Station 的「应用程序」、绿联的「Docker → 项目」都能直接粘贴 compose，不必进 SSH：
+
+1. 新建项目，把 `docker-compose.yml` 的内容整段粘进去
+2. 把 `${BACKUP_LOCATION}`、`${META_LOCATION}` 换成实际路径（界面里没有 `.env` 入口时直接改这两行，效果一样）
+3. 删掉 `build:` 那几行（`context` / `args`）——只有本地编译才需要，粘贴部署用不到，留着会在镜像拉取失败时触发构建并报「找不到 Dockerfile」
+4. 确认 `privileged: true` 和 `- /dev/bus/usb:/dev/bus/usb` 都在
+
+> 部分 NAS 的 Docker 界面里除 `privileged` 外还有单独的「USB 设备直通」开关，也要打开。
+
+### 可选：交互式脚本
+
+仓库里另有一个 `install.sh`，把上面改 `.env` 的几步做成了问答（备份目录、元数据目录、端口、密码），然后同样 `pull` + `up -d --no-build`。适合有 SSH 且装了 `git`、`bash` 的机器：
+
+```bash
+git clone https://github.com/nanshanyi/iVault.git && cd iVault
+chmod +x install.sh && ./install.sh
+```
+
+## 更新
+
+```bash
+docker compose pull
+docker compose up -d --no-build
+```
+
+更新只换镜像：`.env` 留在 compose 目录里，界面上的设置、任务记录和配对证书都在 `META_LOCATION` 里，都不会动，也不用重新配对。
+
+- 有备份或恢复正在跑时别更新：容器重启会中断任务，这条记录会被标成失败
+- 想停在某个版本，把 `.env` 里的 `IVAULT_TAG` 改成具体版本号（如 `v0.5.2`）
 
 ## 无线备份
 
@@ -89,12 +145,7 @@ docker compose pull && docker compose up -d --no-build
 1. 手机与 NAS 在同一局域网（mDNS 组播可达，跨 VLAN 通常不行）
 2. iOS 侧已开启「通过 Wi-Fi 同步」——首次只能在**能识别这台手机的电脑**上用 Finder 或 Apple Devices 勾选，NAS 无法代劳
 
-```bash
-docker compose pull
-docker compose up -d --no-build
-```
-
-默认用 `network_mode: host`：mDNS 靠局域网组播发现设备，bridge 的独立 netns 收不到（实测容器只能收到 Docker 网关 172.27.0.1 的报文，局域网里 iPhone 的广播进不来），所以无线必须 host。代价是 ports 映射失效，Web 端口直接由 `IVAULT_PORT` 决定（默认 8666）。
+默认用 `network_mode: host`：mDNS 靠局域网组播发现设备，bridge 的独立 netns 收不到，所以无线必须 host。代价是 ports 映射失效，Web 端口直接由 `IVAULT_PORT` 决定（默认 8666）。
 
 不想要 host（端口冲突、或在 Docker Desktop 上跑）就用纯 USB 版：
 
@@ -104,11 +155,9 @@ docker compose -f docker-compose.usb.yml up -d --no-build
 
 它用 bridge + 端口映射，并把 `IVAULT_WIFI` 固定为 0——bridge 下 netmuxd 发现不到设备，开着只会让界面显示「无线通道已启用」却没有无线设备。
 
-原理上，`usbmuxd` 只认 USB，所以容器里多跑一个 `netmuxd`（shim 模式）：USB 请求转发给 `usbmuxd`，网络设备由它自己用 mDNS 发现，对外仍是同一个 socket，上层 `idevice_*` 工具完全无感。netmuxd 起不来时入口脚本会自动回落成纯 USB，不影响原有功能。
+设备卡片会标注 `USB` 或 `Wi-Fi`。手机离开或回到局域网后，卡片状态最多滞后 1～2 分钟；点「立即备份」时会现场确认，不受影响（原因见[排查文档](docs/troubleshooting.md#在线状态为什么会滞后)）。
 
-界面上，设备卡片会标注 `USB` 或 `Wi-Fi`；无线设备在备份前会先探活，避免把 mDNS 残留的失效条目误显示成「在线」。
-
-> 无线只服务**已配对过**的设备。发现不到你的手机，通常是上面第 2 条没做，或者设备正在休眠——点亮屏幕、重连一次 Wi-Fi，3 秒内会刷新。
+> 无线只服务**已配对过**的设备。发现不到你的手机，通常是上面第 2 条没做，或者设备正在休眠——点亮屏幕、重连一次 Wi-Fi，最多等 2 分钟，或者直接点「立即备份」。
 
 ## 首次配对的两个坑
 
@@ -120,34 +169,6 @@ docker compose -f docker-compose.usb.yml up -d --no-build
 
 配对证书由 `usbmuxd --config-dir /var/lib/lockdown` 写入，compose 已把宿主机目录挂到那里。容器删了重建，只要这个目录还在，就不用重新插线配对。
 
-## 工作原理
-
-```
-iPhone ──USB──► /dev/bus/usb ──► usbmuxd ──┐
-iPhone ──Wi-Fi──► mDNS ──► netmuxd ───────┴──► 统一 usbmuxd socket
-                                                  │
-浏览器 ◄──REST / SSE──► FastAPI (backend) ─────────┤
-                          │                        │
-                     SQLite 元数据            /data/backups/<UDID>/
-                     + lockdown 证书           Apple MobileSync 备份库
-```
-
-备份协议不是本项目实现的。整机备份能力来自 [`libimobiledevice`](https://libimobiledevice.org/) 的命令行工具链，后端用 `subprocess` 调用并解析输出。自研部分是 Web 管理层、任务调度、配对向导和界面。
-
-```
-backend/
-  main.py     REST API、SSE 流、设备轮询、定时调度
-  device.py   idevice_id / ideviceinfo / idevicepair 封装 + 配对向导状态机
-  jobs.py     idevicebackup2 子进程管理、进度解析、取消
-  store.py    SQLite（devices / backups / settings）
-  config.py   路径与工具链配置
-frontend/
-  index.html  单页界面（内联 CSS，零依赖）
-  app.js      渲染、REST、SSE、配对向导、主题切换
-scripts/
-  entrypoint.sh  启动 usbmuxd + netmuxd（无线）+ uvicorn
-```
-
 ## 配置
 
 | 变量 | 默认 | 说明 |
@@ -155,7 +176,7 @@ scripts/
 | `BACKUP_LOCATION` | *必填* | 备份库在宿主机上的绝对路径 |
 | `META_LOCATION` | `./data` | SQLite 与配对证书目录，**必须持久化** |
 | `IVAULT_PORT` | `8666` | Web 端口 |
-| `IVAULT_TAG` | `latest` | 镜像版本，可固定为 `v0.4.0` |
+| `IVAULT_TAG` | `latest` | 镜像版本，可固定为某个发布，例如 `v0.5.2`（避免 `latest` 被上游覆盖后被动升级） |
 | `IVAULT_PASSWORD` | 空 | **强烈建议设置**：Web 访问密码，启用后所有接口需登录（见下方「安全」） |
 | `IVAULT_SESSION_DAYS` | `30` | 登录会话有效期（天），1–365，非法值自动回落为 30 |
 | `IVAULT_MIN_FREE_GB` | `2` | 备份前磁盘剩余空间下限（GB），低于则拒绝开始备份；`0` 关闭检查 |
@@ -164,7 +185,10 @@ scripts/
 | `IVAULT_USB_WATCHDOG` | `1` | `0` 关闭 USB 热插拔看护（关闭后容器运行中插线不识别，需重启容器） |
 | `IVAULT_OS_NAME` | 空 | 界面左下角显示的系统名，如 `DSM 7.2`；留空则自动探测，探测不到就隐藏 |
 | `IVAULT_LOG` | `INFO` | 日志级别 |
-| `IVAULT_BUILD` | — | 设为 `1` 时 `install.sh` 走本地编译而非拉镜像 |
+| `IVAULT_USBMUXD_VERBOSE` | `0` | `1` 时 usbmuxd 输出详细日志（排查 USB 识别问题用） |
+| `IVAULT_WIFI_LOG` | `warn` | netmuxd 的日志级别（`RUST_LOG` 语法，如 `info`、`debug`） |
+| `IVAULT_USB_DIAG` | `0` | `1` 时 USB 看护启动后做一次自检，把它看到的设备与 socket 状态打进日志 |
+| `IVAULT_BUILD` | — | 仅 `install.sh` 读取：设为 `1` 时本地编译；手动部署等价于 `docker compose up -d --build` |
 
 界面左下角默认只显示服务状态与版本号，不猜系统名。想让它是「DSM 7.2」或「UGOS 1.21」，填 `IVAULT_OS_NAME` 最稳；也可以取消 `docker-compose.yml` 里 `/etc/os-release:/host-os-release:ro` 那行的注释。容器内的 `/etc/os-release` 是镜像自带的 Debian 信息，后端刻意不读——否则界面上会写着「Debian 13」而你的设备其实是群晖。
 
@@ -175,169 +199,45 @@ iVault 能**写设备数据**（恢复会覆盖整机数据），Web 默认监�
 ```bash
 # .env 里加一行（或在 install.sh 交互时直接填）
 IVAULT_PASSWORD=你的密码
-docker compose up -d     # 重启生效
+docker compose up -d --no-build     # 重建容器生效
 ```
 
 - 启用后所有 `/api/*` 接口（含 SSE 实时推送）都需要登录，未登录访问返回 401，页面自动弹出登录浮层
-  唯一例外是容器内回环地址读取 `GET /api/status`：`usb-watchdog` 重启 usbmuxd 前要确认没有任务在跑，
-  而它没有登录态。局域网客户端仍需登录
+  唯一例外是容器内的 `usb-watchdog` 读取 `GET /api/status`：它重启 usbmuxd 前要确认没有任务在跑，但没有登录态，
+  所以凭容器启动时随机生成的内部令牌访问。放行不看来源地址，套反向代理也不会对外免登录
 - 登录态以 HttpOnly Cookie（`SameSite=Lax`）下发，默认 30 天有效（`IVAULT_SESSION_DAYS`，1–365）
 - **退出登录只清除浏览器里的 Cookie**：令牌在有效期内本身仍然有效，被复制走的 Cookie 可继续使用。要让所有会话立即失效，修改 `IVAULT_PASSWORD` 并重启容器即可
 - 密码支持任意字符（含中文）；登录接口带来源级限速：同一 IP 10 分钟内失败 8 次后暂时拒绝
 - iVault 的 Web 走**明文 HTTP**。内网直接访问没有问题；需要从外网访问时，请使用 Tailscale / WireGuard 这类隧道组网，或 NAS 自带的反向代理套 HTTPS——**不要把 8666 端口直接映射到公网**
-- 未设置该变量时服务无鉴权（旧行为），仅适合完全可信的内网环境
+- 未设置该变量时服务无鉴权，仅适合完全可信的内网环境
 
 恢复功能的前置检查：目标设备必须已配对且在线；来源必须有成功备份；加密备份必须提供密码；备份的 iOS 版本不能高于目标手机。若手机没关「查找我的 iPhone」，失败原因里会给出解决办法。
 
 备份密码只在当次请求里经环境变量 `BACKUP_PASSWORD` 交给 `idevicebackup2`，不进命令行、不写日志、不落库。
 
-## HTTP API
+## 常见问题
 
-<details>
-<summary>展开接口列表</summary>
+| 问题 | 先做什么 |
+|---|---|
+| 某次备份或恢复失败了 | 「备份任务 → 任务历史」里点那条记录的**日志** |
+| 插上 iPhone 一直显示离线 | 插线后等 1～2 秒；还不行看[这里](docs/troubleshooting.md#插上-iphone-却一直显示离线) |
+| 无线设备不出现 | 先确认[无线备份](#无线备份)的两个前提，再看[这里](docs/troubleshooting.md#无线wi-fi设备一直不出现) |
+| 定时备份没跑 | 看[这里](docs/troubleshooting.md#定时备份为什么没有跑) |
+| 说不清哪里不对 | 设置 → 关于 → **诊断信息 → 复制**，提 Issue 时附上 |
 
-```
-POST   /api/login                  {password} 登录（启用 IVAULT_PASSWORD 时）
-POST   /api/logout                 退出登录
-GET    /api/status                 服务状态 / 在线设备 / 磁盘剩余
-GET    /api/devices                已配对设备（含在线状态、备份统计）
-DELETE /api/devices/{udid}         取消配对
-POST   /api/devices/{udid}/encryption  {enable, password} 开启/关闭备份加密
-POST   /api/pair/begin             开始配对向导
-GET    /api/pair/{sid}/events      SSE：waiting → found → pairing → done / error
-POST   /api/backups                {udid} 触发备份
-GET    /api/jobs/{id}/events       SSE：progress / log / done / failed
-POST   /api/jobs/{id}/cancel       取消任务
-GET    /api/backups                备份记录列表（含 has_log / error）
-GET    /api/backups/{id}/log       某次任务的完整日志（事后排查）
-DELETE /api/backups/{id}           删除备份记录
-GET    /api/restore/sources        可恢复的备份来源（含已取消配对的设备）
-POST   /api/restore                {udid, source_udid?, password?} 恢复；source_udid 不同于 udid 即换机
-GET/PUT /api/settings              定时、Webhook
-GET    /api/diagnostics            版本 / 系统 / 设备 / 最近告警，纯文本一键复制
-GET    /api/docs                   Swagger 文档
-```
+更多文档：
 
-**取消配对是两侧的事**：设备侧靠 `idevicepair unpair` 通知 iPhone 删掉信任记录，要求设备在线；本机侧则无条件删除 `lockdown/<udid>.plist`。设备离线时只有本机侧生效，iPhone 上的信任仍在保留，接口会在 `message` 里如实说明，前端据此提示「先插上线再取消一次」。证书必须删的原因有两层：留着它 NAS 仍可免信任访问手机，而且它是 `validate` 判定「已授权」的依据，不删就永远等不到信任弹窗。
-
-</details>
-
-## 出问题怎么查
-
-三处日志，覆盖三种场景：
-
-| 场景 | 看哪里 | 保留多久 |
-|---|---|---|
-| 某次备份/恢复为什么失败 | 界面「备份任务 → 历史」状态旁的**日志**按钮 | 随备份记录永久保存 |
-| 配对 / 无线通道为什么不工作 | `docker compose logs ivault`，找 `[usbmuxd]` `[netmuxd]` 前缀 | 容器日志，10MB×3 自动轮转 |
-| 说不清哪里不对 | 设置 → 关于 → **诊断信息 → 复制** | 内存里最近 200 条告警 |
-
-细节：
-
-- **任务日志落库**。`idevicebackup2` 的输出（含时间戳与完整命令行）在任务结束时写进 `backups.log`，只留末尾 24KB。以前这些只活在内存里，任务一结束就没了，事后只能看到一条 FAILED。
-- **容器日志一处看全**。`usbmuxd` 和 `netmuxd` 不再写 `/var/log/*.log`（容器里没有持久卷，重启即丢），而是带前缀直接进 stdout。想看 usbmuxd 的详细过程：`IVAULT_USBMUXD_VERBOSE=1`。
-- **轮询不再刷屏**。前端每 6 秒刷新会打 4 个请求，一天五万多条；`uvicorn` 的 access log 已关掉，改由中间件只记**出错、写操作、超过 1.5 秒的请求**。
-- **诊断信息**是纯文本，含版本、系统、运行时长、设备与连接方式、最近备份记录与失败原因、最近 200 条告警。留一份在手上，过几天回来排查也够用。
-
-### 插上 iPhone 却一直显示离线
-
-容器内的 `usbmuxd` 收不到 USB 热插拔事件（`libusb` 的 hotplug 订阅的是 `udevd` 的转发组，容器里没有 `udevd`，宿主也不会跨 netns 转发），设备表在容器启动瞬间就冻结了。镜像里的 `scripts/usb-watchdog.py` 负责兜底：检测到设备接入就重启 `usbmuxd` 重扫，所以**插线后要等 1~2 秒**页面才会变在线。
-
-按现象分三种情况：
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| 插线后 1~2 秒自己变在线 | 正常，看护在重启 `usbmuxd` 重扫 | 无需处理 |
-| 日志有 `[usb-watchdog] ... 重新扫描`，紧接着 `libusb couldn't open USB device ... errno=2` | compose 里用 `devices:` 挂的 USB 总线，那是**容器创建时的节点备份记录**，插拔后新节点在容器内不存在 | 改成 `volumes: - /dev/bus/usb:/dev/bus/usb` |
-| 拔线后手机仍在广播 mDNS，但页面显示离线 | 无线通道探活失败 | 见下一节「无线（Wi-Fi）设备一直不出现」 |
-
-看护由 `IVAULT_USB_WATCHDOG` 控制，默认开启；设成 `0` 会回到旧行为（容器运行中插线不识别，需要重启容器）。
-
-### 无线（Wi-Fi）设备一直不出现
-
-先分清两件事：手机**有没有广播**，和**本机客户端连的是谁**。
-
-```sh
-# 1) 手机侧：应在同一局域网内看到 _apple-mobdev2._tcp 记录（含你的 iPhone）
-dns-sd -B _apple-mobdev2._tcp local.        # macOS；Linux 用 avahi-browse -rt _apple-mobdev2._tcp
-nc -z <手机IP> 62078                        # lockdownd 端口可达
-
-# 2) 本机侧：设备列表里应能看到网络设备
-idevice_id -n
-```
-
-查看 `[netmuxd]` 日志里的 `Adding network device <UDID>`：有这一行说明发现成功，问题在客户端侧。
-
-**最常见的坑：`USBMUXD_SOCKET_ADDRESS` 少了 `UNIX:` 前缀。** `libusbmuxd` 的 `connect_usbmuxd_socket()` 只认两种写法——`UNIX:<路径>`（大写，`strncmp` 比较）和 `<host>:<port>`。裸路径 `/var/run/usbmuxd-net` 两个分支都不匹配，会**静默回落**到 `/var/run/usbmuxd`：于是所有 `idevice_*` 拿到的是原生 `usbmuxd` 的设备表，USB 一切正常、Wi-Fi 设备永远为空，而且**退出码恒为 0、不报任何错**。`entrypoint.sh` 里已按 `UNIX:$WIFI_SOCKET` 导出，并带一条防回归探针（指向不存在的 socket 若仍返回 0 就告警）。
-
-三条自查，按顺序排掉：
-
-| 检查 | 期望 | 不符合说明 |
-|---|---|---|
-| `echo $USBMUXD_SOCKET_ADDRESS` | `UNIX:/var/run/usbmuxd-net` | 缺前缀 → 客户端连错 socket |
-| `idevice_id -l`（unset 该变量） | 插线时能列出 USB 设备 | 工具链或 usbmuxd 有问题 |
-| `idevice_id -n` | 无线在线时列出 UDID | 需先看 `[netmuxd]` 是否 `Adding network device` |
-
-设备发现成功后仍需通过探活：`idevicepair -n -u <UDID> validate` 返回 0 才算在线。失败说明手机锁屏休眠、已离开局域网，或配对证书被清掉。
-
-## 从源码构建
-
-正常部署**不需要编译**——CI 在推 tag 时构建 `linux/amd64` 镜像并推到 GHCR，NAS 上 pull 即可。只有改过代码或完全离线时才需要自己构建。
-
-需要 `linux/arm64`（树莓派、Apple Silicon 上的 Docker）时，到 Actions 页面手动运行 `Release image`，`platforms` 填 `linux/amd64,linux/arm64`——arm64 在 GitHub 的 runner 上要走 QEMU 模拟，耗时翻倍，所以没有放进默认流程。
-
-<details>
-<summary>展开：依赖构成与编译细节</summary>
-
-**三层依赖**
-
-| 层 | 依赖 | 安装方式 |
-|---|---|---|
-| 前端 | 原生 HTML / CSS / JS，无 npm、无框架、无 CDN | 随镜像静态托管 |
-| 后端 | `fastapi`、`uvicorn[standard]`（仅此 2 个 pip 包），其余全用标准库 | `pip install -r backend/requirements.txt` |
-| 系统工具链 | `libimobiledevice`（`idevice_id` / `ideviceinfo` / `idevicepair` / `idevicebackup2`）+ `usbmuxd` | 从上游源码编译 |
-
-**为什么不用发行版包**
-
-Debian / Ubuntu 源里的 `libimobiledevice-utils` 还停在上游 2020-06-15 的 1.3.0，缺 iOS 17+ 支持与 `idevicebackup2` 的后续修复。所以 `Dockerfile` 按固定顺序从上游构建：
-
-```
-libplist → libimobiledevice-glue → libtatsu → libusbmuxd → libimobiledevice
-```
-
-并单独编译 `usbmuxd`（为了用 `--config-dir` 指定证书目录）。
-
-**所有组件都钉到 40 位 commit SHA**，上游 `master` 怎么变都不影响已有镜像。升级只需改 `Dockerfile` 顶部的 `ARG *_REF`，重新构建并真机验证一次。
-
-编译只发生在 `docker build` 阶段，产物固化进镜像层，运行时零安装、零联网。本地首次构建约 10–20 分钟；国内网络慢可设 `APT_MIRROR=mirrors.ustc.edu.cn`。
-
-**部署后体检**
-
-```bash
-docker exec ivault cat /usr/local/share/build-revisions.txt  # 各组件编译时的 commit
-docker exec ivault idevice_id -l                            # 插线后应列出 UDID
-docker compose logs -f ivault | grep usbmuxd                # 守护进程是否正常
-```
-
-</details>
-
-## 本地开发
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
-.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8666
-```
-
-只做 Web / API 调试不需要系统工具链，`idevice_*` 不存在时设备相关接口会明确报错。要在本机真连 iPhone，macOS 上 `brew install libimobiledevice usbmuxd` 即可。
+- [出问题怎么查](docs/troubleshooting.md)：日志在哪、USB / 无线排障、定时备份与电量的规则
+- [HTTP API](docs/api.md)：接口列表
+- [开发与构建](docs/development.md)：工作原理、目录结构、从源码构建、本地开发
 
 ## 已知限制
 
 1. **备份是单目录覆盖模式，没有快照机制**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，新备份覆写旧状态，磁盘上只有「最新一次可恢复状态」，不能回滚到历史时间点。「备份任务」页的任务历史记录每一次任务（含失败与取消），删记录不会释放空间。中途失败的增量备份可能让这份唯一状态处于不一致，需重新跑一次成功备份修复。
 2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在设备卡片上开启备份加密并牢记密码——密码不会写到 NAS 上，忘记密码就无法恢复加密备份，只能在手机上「还原所有设置」清除它。换机前尤其建议开启。
-   **恢复（含换机恢复）与加密开关尚未在真机上完整验证**，首次使用请用备用机测试。
 3. **无线备份的两个硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次。
-4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`——且必须用 `volumes:` 做 bind mount，写 `devices:` 会让热插拔失效（见「出问题怎么查」）。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
-5. **验证状态**：配对链路已在真机验证（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21），含「未弹窗需拔插线」的排障路径；容器 USB 透传与热插拔看护已在 DXP4800 + iPhone 15 / iOS 27.3 实测（拔线重插后约 1 秒自动恢复在线）；无线通道的命令层已在 macOS 实测（`-n` 发现、探活、失效条目过滤），容器内 mDNS 发现（`[netmuxd] Adding network device`）也已实测。**`idevicebackup2` 落盘尚未实机联调**，其他 NAS 平台也未实机测试。
+4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`——且必须用 `volumes:` 做 bind mount，写 `devices:` 会让热插拔失效（见[排查文档](docs/troubleshooting.md#插上-iphone-却一直显示离线)）。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
+5. **验证状态**：配对链路已在真机验证（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21），含「未弹窗需拔插线」的排障路径；容器 USB 透传与热插拔看护已在 DXP4800 + iPhone 15 / iOS 27.3 实测（拔线重插后约 1 秒自动恢复在线）；无线通道的命令层已在 macOS 实测（`-n` 发现、探活、失效条目过滤），容器内 mDNS 发现（`[netmuxd] Adding network device`）也已实测。没验证的部分见顶部提示；其他 NAS 平台也未实机测试。
 
 ## 致谢
 
