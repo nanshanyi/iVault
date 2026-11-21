@@ -87,15 +87,16 @@ async def _access_log(request: Request, call_next):
     path = request.url.path
     if response.status_code >= 400:
         lvl = log.error if response.status_code >= 500 else log.warning
-    elif request.method in ("GET", "HEAD") and (
-            path in _QUIET_GET or not path.startswith("/api")):
+    elif request.method not in ("GET", "HEAD"):
+        lvl = log.info                       # 写操作一律记：事后要能回答「谁在什么时候点了什么」
+    elif path in _QUIET_GET or not path.startswith("/api"):
         return response                      # 轮询与静态资源：正常时不记
     elif path.endswith("/events"):
         return response                      # SSE 长连接，耗时没有参考意义
     elif ms < 1500:
         return response
     else:
-        lvl = log.info
+        lvl = log.info                       # 慢查询
     lvl("%s %s → %s  %.0fms", request.method, path, response.status_code, ms)
     return response
 
@@ -311,7 +312,14 @@ async def startup():
     asyncio.create_task(_device_poller())
     asyncio.create_task(_battery_sampler())
     asyncio.create_task(_scheduler_loop())
-    log.info("iVault 启动完成，备份目录=%s", config.BACKUP_DIR)
+    # 启动行带上关键配置：单看容器日志就能知道是哪个版本、开了什么
+    sched = (store.get_setting("schedule_time") or "03:00"
+             if store.get_setting("schedule_enabled") in ("1", "true", "True") else "关闭")
+    log.info("iVault v%s 启动完成 · 访问密码%s · 无线%s · 定时备份 %s · "
+             "最低电量 %d%% · 最低剩余 %g GB · 备份目录 %s",
+             VERSION, "已开启" if config.PASSWORD else "未开启",
+             "已启用" if config.WIFI_ENABLED else "未启用", sched,
+             config.MIN_BATTERY, config.MIN_FREE_GB, config.BACKUP_DIR)
 
 
 async def _refresh_transports(probe: str | None = None) -> None:
@@ -325,9 +333,15 @@ async def _refresh_transports(probe: str | None = None) -> None:
     new = {d["udid"]: d["connection"] for d in devs}
     # 离线或换了连接方式时旧电量作废：无线换成 USB 就是插上线开始充电了，
     # 留着旧读数的话，调度器要等它过期（无线 10 分钟）才发现可以备份
+    label = {device.TRANSPORT_USB: "USB", device.TRANSPORT_NET: "Wi-Fi"}
     for udid in set(old) | set(new):
         if old.get(udid) != new.get(udid):
             device.battery_forget(udid)
+            # 只在状态变化时记一条：排查无线「时有时无」最需要这条时间线
+            d = store.get_device(udid)
+            name = (d or {}).get("name") or "…" + udid[-6:]
+            log.info("设备 %s%s：%s → %s", name, "" if d else "（未配对）",
+                     label.get(old.get(udid), "离线"), label.get(new.get(udid), "离线"))
     _state["online_devices"] = [d["udid"] for d in devs]
     _state["transports"] = new
     device.set_transports(new)   # 命令层据此决定是否加 -n
@@ -641,6 +655,8 @@ async def set_encryption(udid: str, body: dict):
     if not ok:
         log.warning("修改备份加密失败 %s：%s", udid, msg)
         raise HTTPException(409, msg)
+    log.info("备份加密已%s：%s", "开启" if enable else "关闭",
+             (store.get_device(udid) or {}).get("name") or udid)
     return {"ok": True, "encrypted": state if state is not None else enable, "message": msg}
 
 
@@ -671,12 +687,25 @@ async def job_events(job_id: str):
     return sse_response(gen())
 
 
+def _client_label(request: Request) -> str:
+    """给日志看的请求来源，回答「谁点的」。
+
+    反向代理后面 client.host 是 127.0.0.1，没有意义：优先取 X-Forwarded-For 第一段，
+    取不到且是回环就只写「来自网页」。只用于日志展示，不参与任何鉴权（这个头可以伪造）。
+    """
+    xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    host = xff or (request.client.host if request.client else "")
+    if not host or host in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        return "来自网页"
+    return f"来自网页 · {host}"
+
+
 @app.post("/api/jobs/{job_id}/cancel")
-async def job_cancel(job_id: str):
+async def job_cancel(job_id: str, request: Request):
     job = jobs.get_job(job_id)
     if not job:
         raise HTTPException(404, "任务不存在或已结束")
-    await job.cancel()
+    await job.cancel(source=_client_label(request))
     return {"ok": True}
 
 

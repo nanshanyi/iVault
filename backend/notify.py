@@ -42,7 +42,7 @@ def _robot_payload(url: str, payload: dict) -> dict:
     return payload
 
 
-def _post(url: str, payload: dict, timeout: float = 5):
+def _post(url: str, payload: dict, timeout: float = 5, label: str = ""):
     data = _robot_payload(url, payload)
     req = urllib.request.Request(
         url,
@@ -51,7 +51,7 @@ def _post(url: str, payload: dict, timeout: float = 5):
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
-        log.info("webhook 已送达（HTTP %s）", getattr(resp, "status", "?"))
+        log.info("webhook 已送达（HTTP %s）%s", getattr(resp, "status", "?"), label)
     # 群机器人常见「HTTP 200 + 响应体业务码失败」——只看状态码会把拒收
     # 当成功，测试按钮就会假成功。errcode 是企业微信 / 钉钉（0=成功）；
     # code 是飞书（0=成功）与 Bark（200=成功）。
@@ -137,19 +137,19 @@ def task_finished(kind: str, status: str, udid: str, *,
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
+    # 日志里带上记录编号与事件，和任务日志、任务历史对得上
+    tag = (("RST-" if kind == "RESTORE" else "BKP-") + f"{backup_id:04d}") if backup_id else ""
+    label = f"· {tag} {payload['event']}".replace("  ", " ")
     if loop is None:
-        try:
-            _post(url, payload)
-        except Exception as e:  # noqa: BLE001
-            log.warning("webhook 发送失败：%s", e)
+        _safe_post(url, payload, label)
         return
     # 任务收尾永远在事件循环里：走线程池，webhook 挂了也不能拖住任务收尾
-    loop.run_in_executor(None, lambda: _safe_post(url, payload))
+    loop.run_in_executor(None, lambda: _safe_post(url, payload, label))
 
 
 def send_test(url: str):
     """发送一条测试通知。失败直接抛异常，由调用方决定如何呈现给用户。"""
-    _post(url, {
+    _post(url, label="· 测试通知", payload={
         "event": "test",
         "text": "iVault 测试通知：Webhook 配置成功，之后每次备份 / 恢复的结果都会推送到这里",
         "title": "iVault 测试通知",
@@ -159,8 +159,8 @@ def send_test(url: str):
     })
 
 
-def _safe_post(url: str, payload: dict):
+def _safe_post(url: str, payload: dict, label: str = ""):
     try:
-        _post(url, payload)
+        _post(url, payload, label=label)
     except Exception as e:  # noqa: BLE001
-        log.warning("webhook 发送失败：%s", e)
+        log.warning("webhook 发送失败%s：%s", label, e)

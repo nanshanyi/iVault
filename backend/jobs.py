@@ -12,6 +12,7 @@ idevicebackup2 的输出里包含 `Total progress: N`（0-100 整数）逐行刷
 - 备份记录只能收尾一次（`_close_backup()`），异常路径与正常路径不会互相覆盖。
 """
 import asyncio
+import collections
 import datetime
 import logging
 import os
@@ -41,7 +42,9 @@ TOTAL_RE = re.compile(r"Total progress:\s*(\d{1,3})")
 FILE_PROG_RE = re.compile(r"\d{1,3}(?:\.\d+)?%\s+[\d.]+\s*(?:[KMGT]i?)?B(?:ytes?)?\s*/", re.I)
 # 每切换一个文件就会刷一遍的三类行：3.5 万个文件足以刷出几万行日志。
 # 它们只是「活动迹象」，隔几秒留一条就够，不必逐条入库。
-NOISE_RE = re.compile(r"^(Status\s|Receiving\s|Sending\s)")
+# 用 \b 而不是 \s：工具重画进度时状态为空，会打出一个裸的「Status」「Sending」，
+# 用 \s 的话它们不算噪声，会一条条落进日志
+NOISE_RE = re.compile(r"^(Status|Receiving|Sending)\b")
 # 报错行必须无条件保留：真实输出里错误常常粘在 Status 行后面
 # （`Status Receiving filesERROR: Could not receive from mobilebackup2 (-256)`），
 # 如果先按前缀判噪声，最有用的那行就没了。
@@ -66,6 +69,12 @@ LIVE_MIN_INTERVAL = 1.0
 # 落库的日志要能回答"哪一段慢"，逐百分比留 100 行信息量并没变多。
 MILESTONE_STEP = 5
 NOISE_LOG_INTERVAL = 10.0
+# 工具结束时自己报的接收文件数（取消、失败也会打印），比按输出行数出来的准
+RECEIVED_RE = re.compile(r"Received\s+(\d+)\s+files\s+from\s+device", re.I)
+# iOS 16.1 起备份开始前手机可能要求输入锁屏密码，工具检测到就打印这一行
+PASSCODE_RE = re.compile(r"Waiting for passcode", re.I)
+# 阶段文字要短：它显示在 150px 进度环的正中间。完整说明写进日志
+PHASE_PASSCODE = "等待输入锁屏密码"
 
 
 def _fmt_size(n: int) -> str:
@@ -80,6 +89,10 @@ def _fmt_size(n: int) -> str:
 # 心跳：精简档不再记录文件级噪声，长时间没有任何输出时补一条，
 # 用来区分「慢慢跑」和「彻底卡死」。
 HEARTBEAT_INTERVAL = 300
+# 开始收发文件之前（等密码、手机准备）一般有几分钟没有任何输出，心跳要更勤，
+# 不然日志里只有一大段空白，看不出是在等手机还是卡死了
+HEARTBEAT_WAITING = 60
+HEARTBEAT_CHECK = 15                  # 心跳每隔多久检查一次
 
 STREAM_LIMIT = 1 << 20
 
@@ -134,11 +147,19 @@ class Job:
         self._last_prog_log_ts = 0.0          # 上一次把整机进度写进日志的时间
         self._last_noise_ts = 0.0             # 上一次把文件级噪声写进日志的时间
         self._last_log_ts = time.time()       # 上一次写日志的时间（心跳判据）
+        self._recent: collections.deque = collections.deque(maxlen=8)  # (时间, 行)，去重用
         self._last_logged_pct = -1            # 精简档：上一次写进日志的整机百分比
         self._last_milestone = 0              # 上一次落日志的里程碑百分比
         self._live_text = ""                  # 当前活动行文本（末行原地刷新用）
         self._last_live_ts = 0.0              # 上一次推活动行的时间（节流用）
-        self._files_seen = 0                  # 本次任务收发过的文件数（Receiving/Sending 计数）
+        self._files_seen = 0                  # 本次任务收发过的文件数（按文件名变化计数）
+        self._last_file = ""                  # 上一个收发的文件名（同一文件分块传输会重复打印）
+        self._last_activity = ""              # 最后一个收发的文件（失败/取消时写进日志）
+        self._reported_files: int | None = None   # 工具自己报的 Received N files
+        self._transfer_started = False        # 开始收发文件了没有（之前都算「等手机」）
+        self._waiting_since = time.time()     # 等手机从什么时候开始（心跳文案用）
+        self._kill_note = ""                  # 进程是怎么结束的：SIGTERM / 强制结束
+        self.backup_type = ""                 # FULL / INCREMENTAL，由 _run_backup 决定
         self._verbose_cache: bool | None = None   # 日志详细度（设置项，懒加载）
 
     # ----- 事件广播 -----
@@ -160,7 +181,14 @@ class Job:
             self.subscribers.remove(q)
 
     def add_log(self, line: str):
-        self._last_log_ts = time.time()
+        # 同一行 10 秒内再出现就丢掉。工具收到 SIGTERM 后每次重画进度都会再打一遍
+        # 「Status  Abort requested, hold on...」，中间还夹着别的行（真机一次取消落了 4 条），
+        # 只和上一行比去不干净；隔得久的重复（比如同一个报错过几分钟又来）照常保留
+        now = time.time()
+        if any(prev == line and now - ts < 10 for ts, prev in self._recent):
+            return
+        self._recent.append((now, line))
+        self._last_log_ts = now
         self.log_tail.append(line)
         if len(self.log_tail) > 400:
             self.log_tail.pop(0)
@@ -179,6 +207,26 @@ class Job:
                 self._verbose_cache = False
         return self._verbose_cache
 
+    def tag(self) -> str:
+        """记录编号，和任务历史里显示的一致：BKP-0002 / RST-0003。"""
+        if not self.backup_id:
+            return "job-" + self.id[:8]
+        return ("RST-" if self.kind == "RESTORE" else "BKP-") + f"{self.backup_id:04d}"
+
+    def _mark_transfer_started(self):
+        """第一次真正开始收发数据：切阶段，并在日志里留下时间点。
+
+        这一行回答「输完锁屏密码后手机准备了多久」。以前只能靠一个碰巧落库的裸
+        Status 行去猜，现在裸 Status 按噪声丢掉了，必须显式记。
+        """
+        if self._transfer_started:
+            return
+        self._transfer_started = True
+        self.phase = "正在传输数据"
+        waited = int(time.time() - self.started_at)
+        self.add_log(f"开始传输数据（距开始 {waited // 60} 分 {waited % 60} 秒）")
+        self.broadcast({"type": "progress", "progress": self.progress, "phase": self.phase})
+
     def _verb(self) -> str:
         return "正在恢复" if self.kind == "RESTORE" else "正在备份"
 
@@ -191,12 +239,29 @@ class Job:
             src_name = src.get("name") or "…" + self.source_udid[-6:]
             enc = "加密备份" if self._env else "未加密备份"
             return f"恢复 · 「{src_name}」→「{dst_name}」 · {enc}"
-        # 目录里已有 Manifest.plist 说明这是同一份备份的增量更新，
-        # 没有则是首次全量——idevicebackup2 自己就是这么判定的
-        has_base = os.path.isfile(os.path.join(config.BACKUP_DIR, self.udid, "Manifest.plist"))
+        # 和备份记录的 type 用同一个依据（有没有成功过的备份），任务头、记录、
+        # 任务历史三处说法一致。idevicebackup2 自己打印的 Incremental/Full backup mode
+        # 看的是目录里的文件，失败过的半截备份也算，所以它说的可能和这里不同
+        kind = ("增量备份" if self.backup_type == "INCREMENTAL"
+                else "全量备份（还没有成功的备份）")
         enc = "已加密" if dst.get("encrypted") else "未加密"
-        return (f"{dst_name} · {'增量' if has_base else '全量'}备份 · {enc}"
-                f" · → {config.BACKUP_DIR}")
+        return f"{dst_name} · {kind} · {enc} · → {config.BACKUP_DIR}"
+
+    def _env_text(self) -> str:
+        """开跑时的环境：走什么通道、电量、备份盘剩余。失败时最先要排除的就是这几样。"""
+        conn = "Wi-Fi" if device.get_transport(self.udid) == device.TRANSPORT_NET else "USB"
+        b = device.battery_cached(self.udid)
+        if b:
+            chg = "充电中" if b["charging"] else "接着电源" if b["external"] else "未充电"
+            # 读数可能是缓存的（定时备份复用未过期读数，无线最长 10 分钟），
+            # 不写时间的话事后会把它当成开跑那一刻的电量
+            age = int((time.time() - b["at"]) // 60)
+            batt = f"电量 {b['level']}%（{chg}" + (f"，读数 {age} 分钟前" if age >= 1 else "") + "）"
+        else:
+            batt = "电量未知"
+        free = _disk_free_bytes(config.BACKUP_DIR)
+        disk = f"备份盘剩余 {_fmt_size(free)}" if free >= 0 else "备份盘剩余未知"
+        return f"{conn} · {batt} · {disk}"
 
     def _elapsed_text(self) -> str:
         sec = max(0, int(time.time() - (self.started_at or time.time())))
@@ -254,6 +319,20 @@ class Job:
             line = line[:LINE_MAX] + " …"
         now = time.time()
 
+        m = RECEIVED_RE.search(line)
+        if m:
+            self._reported_files = int(m.group(1))
+
+        # 手机在等锁屏密码：界面上要明确说出来，否则几分钟的 0% 看起来像卡死
+        if PASSCODE_RE.search(line) and not self._transfer_started:
+            self.phase = PHASE_PASSCODE
+            self._waiting_since = now
+            self.broadcast({"type": "progress", "progress": self.progress, "phase": self.phase})
+            self.add_log(line)
+            self.add_log("手机要求输入锁屏密码：请在 iPhone 上输入。输入后手机还要准备几分钟才开始传数据，"
+                         "这段时间进度停在 0% 是正常的")
+            return
+
         # 报错/告警优先：不节流、不判噪声，原样留下
         if ERROR_RE.search(line):
             self.add_log(line)
@@ -268,12 +347,20 @@ class Job:
                 pct = int(m.group(1))
             except ValueError:
                 pct = None
+            # 100% 一律不认：idevicebackup2 退出前无条件调用 progress_finish()，
+            # 把整机进度置成 100 再打一遍——取消、失败也一样。认了它，日志里就会
+            # 冒出一行「正在备份 99%」，排查时以为差一点就完成了。
+            # 真正成功时由任务收尾置 100。
+            if pct is not None and pct >= 100:
+                return
             if pct is not None:
-                # 只增不减：分段输出混排时数字不会来回跳。
-                # 上限压到 99%：idevicebackup2 在收尾（包括中途放弃）时会先打一行
-                # 100%，只有真正成功才由 _finish 置 100，避免失败的任务显示成满格。
-                self.progress = max(self.progress, min(99, pct))
-                self.phase = "正在传输数据"
+                # 只增不减：分段输出混排时数字不会来回跳
+                self.progress = max(self.progress, pct)
+                if pct > 0:
+                    self._mark_transfer_started()
+                # 还在等手机时保留「等待输入锁屏密码」的提示，开始收发后再切换
+                if self._transfer_started or self.phase != PHASE_PASSCODE:
+                    self.phase = "正在传输数据"
                 if now - self._last_prog_ts >= PROGRESS_MIN_INTERVAL:
                     self._last_prog_ts = now
                     self.broadcast({"type": "progress", "progress": self.progress,
@@ -296,12 +383,21 @@ class Job:
         # 文件级噪声（切换文件、单文件进度条）：不落日志，
         # 只把「正在收发的文件」喂给活动行 —— 卡住时最后一条就是卡住的那个文件。
         if NOISE_RE.search(line) or FILE_PROG_RE.search(line):
-            # 每切换一个文件都会打一条 Receiving/Sending：拿它当文件计数器，
-            # 里程碑行里的「已传 N 个文件」就是这么来的（不额外扫盘）
-            if line.startswith(("Receiving", "Sending")):
-                self._files_seen += 1
             act = self._activity(line)
             if act:
+                # 文件计数按「文件名变了」算：工具每收一块数据就把四行进度整个重画一遍，
+                # 大文件分很多块，同一个 Receiving 行会出现很多次（实测多算近一倍）
+                name = line.split(None, 1)[1].strip()
+                if name != self._last_file:
+                    self._last_file = name
+                    self._files_seen += 1
+                self._last_activity = act
+                # 只认主方向：备份是从手机收（Receiving），恢复是往手机发（Sending）。
+                # 备份开始前工具可能先给手机发一两个小文件，不能把那个当成开始传数据，
+                # 否则「等待输入锁屏密码」的提示会提前消失
+                main_dir = "Sending" if self.kind == "RESTORE" else "Receiving"
+                if line.startswith(main_dir):
+                    self._mark_transfer_started()
                 self._live(act)
             if self._verbose() and now - self._last_noise_ts >= NOISE_LOG_INTERVAL:
                 self._last_noise_ts = now
@@ -317,21 +413,31 @@ class Job:
         没有进度变化——这条心跳让人知道「还在跑，只是没动静」。
         """
         while not self.finalized:
-            await asyncio.sleep(30)
+            await asyncio.sleep(HEARTBEAT_CHECK)
             if self.finalized:
                 return
-            idle = time.time() - self._last_log_ts
-            if idle >= HEARTBEAT_INTERVAL:
+            now = time.time()
+            idle = now - self._last_log_ts
+            if not self._transfer_started:
+                # 还没开始收发：等密码或手机准备，一分钟报一次，带总等待时长
+                if idle >= HEARTBEAT_WAITING:
+                    waited = int((now - self._waiting_since) // 60)
+                    self.add_log(f"仍在等待手机，已等 {max(1, waited)} 分钟"
+                                 + ("（请确认已在 iPhone 上输入锁屏密码）"
+                                    if self.phase == PHASE_PASSCODE else ""))
+            elif idle >= HEARTBEAT_INTERVAL:
                 self.add_log(f"仍在传输中，当前 {self.progress}%"
                              f"（已 {int(idle // 60)} 分钟无新输出）")
 
     def _log_text(self, header: str = "") -> str:
         body = "\n".join(self.log_stamped)
-        # 收尾时补上最后一条活动行。它在跑的过程中不进日志（那是几万行），
-        # 但「最后一个收发的文件」恰恰是卡住或失败时最有用的线索。
-        if self._live_text and self.log_tail[-1:] != [self._live_text]:
-            body += "\n" + datetime.datetime.now().strftime("%H:%M:%S ") + self._live_text
         return (header + "\n" + body) if header else body
+
+    def _files_text(self) -> str:
+        """小结里的文件数：工具报了就用工具的，没报（恢复、异常中断）才用计数。"""
+        if self._reported_files is not None:
+            return f"设备报告收到 {self._reported_files} 个文件"
+        return f"本次传 {self._files_seen} 个文件"
 
     def _persist_log(self, error: str = ""):
         """把日志落到备份记录里；失败也不能影响任务收尾。"""
@@ -368,10 +474,16 @@ class Job:
         # 跑完一轮电量必然变了，旧读数作废；有人看页面或调度器需要时再查
         device.battery_forget(self.udid)
         if status != "DONE":
+            # 最后一个收发的文件：跑的过程中文件行不进日志（那是几万行），
+            # 但卡住或失败时它恰恰是最有用的线索。放在小结之前，免得看起来像取消后还在收
+            if self._last_activity:
+                self.add_log("最后一个文件：" + self._last_activity)
             # 失败/取消也留一句小结：没跑完的备份最需要知道「动了多少、花了多久」
             label = "已取消" if status == "CANCELED" else "失败"
-            self.add_log(f"{label} · 本次传 {self._files_seen} 个文件"
-                         f" · 已用 {self._elapsed_text()}")
+            self.add_log(f"{label} · {self._files_text()} · 已用 {self._elapsed_text()}")
+        err = extra.get("error", "")
+        log.info("任务结束 %s · %s · 用时 %s%s", self.tag(), status, self._elapsed_text(),
+                 f" · {err}" if err else "")
         if status == "CANCELED":
             self._persist_log("用户取消")
         else:
@@ -402,6 +514,7 @@ class Job:
             return
         try:
             proc.terminate()
+            self._kill_note = "已发送 SIGTERM"
         except ProcessLookupError:
             return
         try:
@@ -411,6 +524,7 @@ class Job:
             pass
         try:
             proc.kill()
+            self._kill_note = f"SIGTERM 后 {grace:g} 秒未退出，已强制结束"
         except ProcessLookupError:
             return
         try:
@@ -434,8 +548,11 @@ class Job:
 
         无论循环是正常结束还是抛异常，finally 都会保证进程不留在后台。
         """
-        self.add_log(self._header_text())
+        header, env = self._header_text(), self._env_text()
+        self.add_log(header)
+        self.add_log(env)
         self.add_log(f"$ {' '.join(args)}")
+        log.info("任务开始 %s · %s · %s", self.tag(), header, env)
         if self._cancel_requested:
             # 还没起进程就被取消：连备份记录都不该开始写
             return -1
@@ -485,6 +602,10 @@ class Job:
                 await self._kill_proc()
         rc = await self.proc.wait()
         self.rc = rc
+        # 退出码 + 怎么结束的：区分「正常退出」「响应 SIGTERM 退出」「被强制结束」
+        how = f"被信号 {-rc} 结束" if rc < 0 else ""
+        note = "，".join(x for x in (self._kill_note, how) if x)
+        self.add_log(f"{os.path.basename(args[0])} 退出码 {rc}" + (f"（{note}）" if note else ""))
         return rc
 
     async def run_backup(self):
@@ -513,6 +634,7 @@ class Job:
             s["status"] == "COMPLETE" for s in prior
         ) else "FULL"
 
+        self.backup_type = backup_type
         self.backup_id = store.create_backup(self.udid, backup_type=backup_type)
         if self._cancel_requested:
             self._close_backup("CANCELED", error="启动前已取消")
@@ -549,7 +671,7 @@ class Job:
             if meta.get("encrypted") is not None:
                 store.set_device_encrypted(self.udid, meta["encrypted"])
             size = await _dir_size(dev_dir)
-            self.add_log(f"完成 · 本次传 {self._files_seen} 个文件"
+            self.add_log(f"完成 · {self._files_text()}"
                          f" · 目录 {_fmt_size(size)} · 用时 {self._elapsed_text()}")
             self._close_backup("COMPLETE", size_bytes=size, backup_type=backup_type)
             self._finish("DONE", progress=100, size=size, backup_id=self.backup_id)
@@ -558,9 +680,13 @@ class Job:
             self._close_backup("FAILED", error=err)
             self._finish("FAILED", error=err)
 
-    async def cancel(self):
+    async def cancel(self, source: str = ""):
         if self.finalized or self.status != "RUNNING":
             return
+        # 记下是谁取消的：日志里只有工具自己的 Abort requested 的话，
+        # 分不清是用户点了取消、服务在重启，还是进程被外部杀掉
+        self.add_log("收到取消请求" + (f"（{source}）" if source else ""))
+        log.info("任务 %s 收到取消请求%s", self.tag(), f"（{source}）" if source else "")
         # 先立旗再动进程：取消有可能早于 create_subprocess_exec（握手前的
         # 建目录、建备份记录都是同步操作，但那一步的 await 仍在）。只改状态的话，
         # 运行的协程看不见旗子，照样会把整轮备份跑完。
@@ -776,7 +902,7 @@ async def _run_restore_inner(job: "Job"):
         job._close_backup("CANCELED")
         job._finish("CANCELED")
     elif rc == 0:
-        job.add_log(f"完成 · 本次传 {job._files_seen} 个文件 · 用时 {job._elapsed_text()}")
+        job.add_log(f"完成 · {job._files_text()} · 用时 {job._elapsed_text()}")
         job._close_backup("COMPLETE")
         job._finish("DONE", progress=100)
     else:
