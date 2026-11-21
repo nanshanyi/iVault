@@ -134,7 +134,7 @@ docker compose up -d --no-build
 更新只换镜像：`.env` 留在 compose 目录里，界面上的设置、任务记录和配对证书都在 `META_LOCATION` 里，都不会动，也不用重新配对。
 
 - 有备份或恢复正在跑时别更新：容器重启会中断任务，这条记录会被标成失败
-- 想停在某个版本，把 `.env` 里的 `IVAULT_TAG` 改成具体版本号（如 `v0.5.2`）
+- 想停在某个版本，把 `.env` 里的 `IVAULT_TAG` 改成具体版本号（如 `v0.6.0`）
 
 ## 无线备份
 
@@ -176,7 +176,7 @@ docker compose -f docker-compose.usb.yml up -d --no-build
 | `BACKUP_LOCATION` | *必填* | 备份库在宿主机上的绝对路径 |
 | `META_LOCATION` | `./data` | SQLite 与配对证书目录，**必须持久化** |
 | `IVAULT_PORT` | `8666` | Web 端口 |
-| `IVAULT_TAG` | `latest` | 镜像版本，可固定为某个发布，例如 `v0.5.2`（避免 `latest` 被上游覆盖后被动升级） |
+| `IVAULT_TAG` | `latest` | 镜像版本，可固定为某个发布，例如 `v0.6.0`（避免 `latest` 被上游覆盖后被动升级） |
 | `IVAULT_PASSWORD` | 空 | **强烈建议设置**：Web 访问密码，启用后所有接口需登录（见下方「安全」） |
 | `IVAULT_SESSION_DAYS` | `30` | 登录会话有效期（天），1–365，非法值自动回落为 30 |
 | `IVAULT_MIN_FREE_GB` | `2` | 备份前磁盘剩余空间下限（GB），低于则拒绝开始备份；`0` 关闭检查 |
@@ -220,6 +220,7 @@ docker compose up -d --no-build     # 重建容器生效
 | 问题 | 先做什么 |
 |---|---|
 | 某次备份或恢复失败了 | 「备份任务 → 任务历史」里点那条记录的**日志** |
+| 进度一直停在 0% | 去 iPhone 上输入锁屏密码，输入后还要等几分钟，见[这里](docs/troubleshooting.md#进度一直停在-0) |
 | 插上 iPhone 一直显示离线 | 插线后等 1～2 秒；还不行看[这里](docs/troubleshooting.md#插上-iphone-却一直显示离线) |
 | 无线设备不出现 | 先确认[无线备份](#无线备份)的两个前提，再看[这里](docs/troubleshooting.md#无线wi-fi设备一直不出现) |
 | 定时备份没跑 | 看[这里](docs/troubleshooting.md#定时备份为什么没有跑) |
