@@ -222,9 +222,13 @@ int main(int argc, char **argv)
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGINT, &sa, NULL);
 #ifdef __linux__
-	/* 后端进程意外退出时跟着退出，不留孤儿进程 */
+	/* 后端进程意外退出时跟着退出，不留孤儿进程。
+	 * 不能拿「父进程是不是 1」来判断：容器里后端（uvicorn）自己就是 PID 1。
+	 * 要比的是 prctl 之前和之后父进程变没变——父进程恰好在 prctl 生效前退出时，
+	 * 信号收不到，只能靠这一步补上 */
+	pid_t parent = getppid();
 	prctl(PR_SET_PDEATHSIG, SIGTERM);
-	if (getppid() == 1)
+	if (getppid() != parent)
 		return 1;
 #endif
 

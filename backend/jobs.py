@@ -285,6 +285,7 @@ class Job:
         self.progress = 0
         self.phase = "准备中"
         self.log_tail: list[str] = []
+        self.log_ts: list[float] = []          # 和 log_tail 一一对应的产生时间（重连补发时用）
         self.log_stamped: list[str] = []      # 带时间戳，落库用（前端自己有时间列）
         self.proc: asyncio.subprocess.Process | None = None
         self.task: asyncio.Task | None = None
@@ -349,13 +350,15 @@ class Job:
         self._recent.append((now, line))
         self._last_log_ts = now
         self.log_tail.append(line)
+        self.log_ts.append(now)
         if len(self.log_tail) > 400:
             self.log_tail.pop(0)
+            self.log_ts.pop(0)
         # 落库版本带时间戳：事后要看「哪一步卡了多久」，没有时间就没法判断
         self.log_stamped.append(datetime.datetime.now().strftime("%H:%M:%S ") + line)
         if len(self.log_stamped) > 2000:
             self.log_stamped.pop(0)
-        self.broadcast({"type": "log", "line": line})
+        self.broadcast({"type": "log", "line": line, "ts": now})
 
     def _verbose(self) -> bool:
         """日志详细度：默认精简（约 40 行/次，与备份时长无关），可切详细。"""
@@ -491,10 +494,15 @@ class Job:
             return
         proc = self._awake_proc
         acquired, fails = False, 0
+        other: list[str] = []     # 协议之外的输出（缺动态库、参数错误等），提前退出时一起记下
         try:
             assert proc.stdout
             async for raw in proc.stdout:
                 line = raw.decode(errors="replace").strip()
+                if line and not line.startswith(("ACQUIRED", "RENEWED", "FAILED", "RELEASED")):
+                    if len(other) < 3:
+                        other.append(line[:200])
+                    continue
                 if line.startswith("ACQUIRED"):
                     acquired, fails = True, 0
                     self.add_log("已让手机在无线传输期间保持唤醒（防止休眠断开，每 5 分钟续一次）")
@@ -507,6 +515,13 @@ class Job:
                         verb = "续期" if acquired else "申请"
                         self.add_log(f"防休眠{verb}失败（{line}），会继续重试；备份照常进行")
                     log.info("任务 %s 防休眠：%s", self.tag(), line)
+            # 读到 EOF 说明工具自己退出了；任务还在跑就是不正常，必须留痕，
+            # 不然日志里既没有「保持唤醒」也没有「失败」，看不出防休眠根本没生效
+            rc = await proc.wait()
+            if not self.finalized:
+                why = f"退出码 {rc}" + (f"：{' / '.join(other)}" if other else "")
+                self.add_log(f"防休眠工具提前退出（{why}），这次传输没有防休眠保护；备份照常进行")
+                log.warning("任务 %s 防休眠工具提前退出：%s", self.tag(), why)
         finally:
             if proc.returncode is None:
                 try:

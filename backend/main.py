@@ -846,8 +846,10 @@ async def job_events(job_id: str):
         raise HTTPException(404, "任务不存在或已结束")
     q = job.subscribe()
     q.put_nowait({"type": "progress", "progress": job.progress, "phase": job.phase})
-    for line in job.log_tail[-100:]:
-        q.put_nowait({"type": "log", "line": line})
+    # 带上每行产生的时间：前端以前用收到的时刻当时间戳，页面在后台挂起后重连，
+    # 补发的 100 行会全写成重连那一秒（真机上「开始传输」显示成了 11 分钟后）
+    for line, ts in zip(job.log_tail[-100:], job.log_ts[-100:], strict=True):
+        q.put_nowait({"type": "log", "line": line, "ts": ts})
     # 底部两行常驻（进度 / 当前文件）是前端原地刷新的：重连时补一次快照，
     # 否则要等到下一次进度或换文件才出现，刷新页面看起来像丢了状态
     for slot, text in job.live_snapshot().items():

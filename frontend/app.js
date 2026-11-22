@@ -176,9 +176,9 @@ let logRaf = 0;
    idevicebackup2 本来就是用 \r 原地刷新，后端把那些帧转成带 slot 的 live 事件。 */
 let liveRows = { progress: null, file: null };
 const LIVE_SLOTS = ['progress', 'file'];
-function queueLog(line) {
+function queueLog(line, ts) {
   if (line.length > TERM_LINE_MAX) line = line.slice(0, TERM_LINE_MAX) + ' …';
-  logQueue.push(line);
+  logQueue.push([line, ts]);
   if (logRaf) return;
   logRaf = requestAnimationFrame(flushLog);
 }
@@ -186,9 +186,11 @@ function flushLog() {
   logRaf = 0;
   const term = $('term');
   if (!term) { logQueue = []; return; }
-  const time = new Date().toTimeString().slice(0, 8);
+  const now = new Date().toTimeString().slice(0, 8);
   const frag = document.createDocumentFragment();
-  logQueue.forEach(line => {
+  /* 时间用后端记下的产生时刻：重连时补发的旧行不能都标成「现在」 */
+  logQueue.forEach(([line, ts]) => {
+    const time = ts ? new Date(ts * 1000).toTimeString().slice(0, 8) : now;
     const row = document.createElement('div');
     row.className = 'ln';
     const t = document.createElement('span');
@@ -941,7 +943,7 @@ function attachJob(jobId, udid, startedAt, kind) {
     let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
     if (d.type === 'log') {
       logCount++;
-      queueLog(d.line);
+      queueLog(d.line, d.ts);
     } else if (d.type === 'live') {
       renderLive(d.text, d.slot || 'file');   // 两行常驻，各自原地刷新
     } else if (d.type === 'progress') {
