@@ -111,6 +111,19 @@ STALL_PREFIX = "传输中断"
 # 报错前多久还在收发数据算「突然断开」；超过这个就是「先卡住、后断开」
 SUDDEN_GAP = 60
 
+# 取消时给工具留多久自己退出（之后才 SIGKILL）。
+# idevicebackup2 收到 SIGTERM 只是把 quit_flag 加一，要等手上那次接收返回才会检查它。
+# 传输中消息不断，1 秒内就退出（真机 BKP-0010）；还没开始传时（等密码、握手、手机准备），
+# 它卡在一次 30 秒的接收里（property_list_service_receive_plist 写死 30000 ms），
+# poll 被信号打断后会接着等完。以前一律 5 秒就强杀，工具来不及释放同步锁、发同步结束通知、
+# 给备份服务发 DLMessageDisconnect——真机上每次这样强杀之后，手机端备份服务都有几分钟
+# 不理新连接（握手 30 秒超时报 -1，0006→0007/0008、0011→0013/14/15）
+CANCEL_GRACE_TRANSFER = 5
+CANCEL_GRACE_WAITING = 35
+# 强杀之后多久内的 -1 归因到「上次被强制结束」（真机恢复要 3 分半到 7 分钟）
+KILL_AFTERMATH = 10 * 60
+_last_kill: dict[str, float] = {}   # udid -> 最近一次 SIGKILL 的时间
+
 # 无线任务的防休眠断言（tools/ivault-keepawake.c）：断言 15 分钟到期，每 5 分钟续一次，
 # 续期失败一两次也还在有效期内。到期由手机自己释放，工具或后端崩了手机也不会一直醒着
 KEEPAWAKE_TIMEOUT = 900
@@ -156,8 +169,9 @@ def _version_exchange_text(m: "re.Match") -> str:
     if code in (-6, -8):
         return _VERSION_MISMATCH
     if code == -1:
-        return ("没连上手机的备份服务（服务已启动，但连接没建立起来）。解锁手机、等一两分钟再试；"
-                "Wi-Fi 下反复出现就插数据线，还不行重启 iPhone")
+        # USB 上同样会出现（真机 BKP-0013~0015），不是无线特有的
+        return ("没连上手机的备份服务：服务端口开了，但手机 30 秒内没有回应。"
+                "解锁 iPhone、等几分钟再试；还不行就重启 iPhone")
     return MB2_ERRORS.get(code, f"和手机的备份服务握手失败（错误码 {code}）")
 
 
@@ -190,6 +204,18 @@ _ERROR_RULES = [
     (re.compile(r"Backup directory \"[^\"]*\" does not exist"),
      "备份目录不存在，请检查 BACKUP_LOCATION 的挂载"),
 ]
+
+
+VERSION_EXCHANGE_RE = re.compile(r"Could not perform backup protocol version exchange, error code -1")
+
+
+def kill_aftermath(udid: str, since: float) -> str:
+    """这次任务开始前 KILL_AFTERMATH 内，同一台设备有没有任务被强杀；有就返回「N 分钟前」这样的说明。"""
+    at = _last_kill.get(udid)
+    if not at or at > since or since - at > KILL_AFTERMATH:
+        return ""
+    mins = int((since - at) // 60)
+    return f" {mins} 分钟前" if mins >= 1 else "刚才"
 
 
 def explain_failure(tail: str) -> str:
@@ -281,7 +307,7 @@ class Job:
         # 只用于传备份密码，绝不写进日志
         self._env = env
         self.subscribers: list[asyncio.Queue] = []
-        self.status = "RUNNING"               # RUNNING | DONE | FAILED | CANCELED
+        self.status = "RUNNING"               # RUNNING | CANCELING | DONE | FAILED | CANCELED
         self.progress = 0
         self.phase = "准备中"
         self.log_tail: list[str] = []
@@ -463,7 +489,12 @@ class Job:
 
     def _failure_reason(self, rc: int) -> str:
         """失败原因：把工具输出里的报错翻成能看懂的话，再按连接方式给一句建议。"""
-        why = explain_failure("\n".join(self.log_tail[-60:]))
+        tail = "\n".join(self.log_tail[-60:])
+        killed = kill_aftermath(self.udid, self.started_at)
+        if killed and VERSION_EXCHANGE_RE.search(tail):
+            return (f"手机端备份服务还没恢复：上一次任务{killed}被强制结束，"
+                    "手机还在等那次备份收尾，暂时不接受新的备份。等几分钟再试，或者重启 iPhone")
+        why = explain_failure(tail)
         if not why:
             return f"{os.path.basename(config.BIN_IDEVICEBACKUP2)} 退出码 {rc}，没能识别具体原因，请查看本条任务日志"
         if why.startswith(_LINK_LOST):
@@ -919,11 +950,17 @@ class Job:
         except Exception as e:  # noqa: BLE001
             log.warning("任务 %s webhook 通知失败：%s", self.id, e)
 
-    async def _kill_proc(self, grace: float = 5.0):
+    def _cancel_grace(self) -> float:
+        """SIGTERM 之后等多久再强杀：按工具此刻卡在哪一步（见 CANCEL_GRACE_*）。"""
+        return CANCEL_GRACE_TRANSFER if self._transfer_started else CANCEL_GRACE_WAITING
+
+    async def _kill_proc(self, grace: float | None = None):
         """确保子进程退出。可重入：进程已退出或压根没起来时直接返回。"""
         proc = self.proc
         if not proc or proc.returncode is not None:
             return
+        if grace is None:
+            grace = self._cancel_grace()
         try:
             proc.terminate()
             # 只有第一次写才有意义：cancel() 与 _pump() 的 finally 会并发进来，
@@ -939,6 +976,10 @@ class Job:
         try:
             proc.kill()
             self._kill_note = f"SIGTERM 后 {grace:g} 秒未退出，已强制结束"
+            # 强杀会让手机端备份服务几分钟不理新连接：记下来，下一次 -1 据此解释原因
+            _last_kill[self.udid] = time.time()
+            log.warning("任务 %s 的子进程 pid=%s 在 SIGTERM 后 %g 秒未退出，已强制结束",
+                        self.tag(), proc.pid, grace)
         except ProcessLookupError:
             return
         try:
@@ -1124,9 +1165,16 @@ class Job:
         # 建目录、建备份记录都是同步操作，但那一步的 await 仍在）。只改状态的话，
         # 运行的协程看不见旗子，照样会把整轮备份跑完。
         self._cancel_requested = True
-        self.status = "CANCELED"
-        # 不在这里等进程退出：等密码阶段工具不理 SIGTERM，要等 5 秒后强杀，
-        # 取消按钮也就转 5 秒才有反应（真机 5020ms）。任务的结束由 SSE 推给页面
+        # CANCELING 而不是直接 CANCELED：工具还没退出，设备仍被占用，
+        # USB 看护也不能在这时重启 usbmuxd（会把它收尾要用的连接切断）。
+        # 收尾时 _finish 才置 CANCELED
+        self.status = "CANCELING"
+        grace = self._cancel_grace()
+        if grace > CANCEL_GRACE_TRANSFER:
+            self.add_log(f"正在取消：等工具通知手机结束本次备份（最多 {grace:g} 秒）。"
+                         "直接强制结束的话，手机端要过几分钟才会接受下一次备份")
+        self.broadcast({"type": "canceling", "grace": grace})
+        # 不在这里等进程退出，任务的结束由 SSE 推给页面
         self._kill_task = self._spawn_kill()
 
 
@@ -1237,7 +1285,8 @@ def active_jobs() -> list[dict]:
     return [
         {"id": j.id, "udid": j.udid, "source_udid": j.source_udid, "kind": j.kind,
          "status": j.status, "progress": j.progress, "phase": j.phase, "started_at": j.started_at}
-        for j in _jobs.values() if j.status == "RUNNING"
+        # CANCELING 也算：工具还没退出，设备仍被占用（USB 看护据此暂缓重启 usbmuxd）
+        for j in _jobs.values() if j.status in ("RUNNING", "CANCELING")
     ]
 
 

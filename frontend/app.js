@@ -967,6 +967,8 @@ function attachJob(jobId, udid, startedAt, kind) {
       finishJob('failed', (currentJob && currentJob.kind === 'RESTORE' ? '恢复失败' : '备份失败'), d.error);
     } else if (d.type === 'canceled') {
       finishJob('canceled', '任务已取消');
+    } else if (d.type === 'canceling') {
+      showCanceling(d.grace);
     }
   };
   jobSource.onerror = () => {
@@ -1048,6 +1050,7 @@ function finishJob(kind, msg, error) {
   const btn = $('jobActBtn');
   btn.textContent = '关闭';
   btn.className = 'btn';
+  btn.disabled = false;
   btn.onclick = hideLiveJob;
   setTaskStart(true);
   /* 失败了多半要马上再来一次：就地给重试，不用回设备页找按钮。
@@ -1076,7 +1079,7 @@ function resetLiveJob() {
   const box = $('jobErr');
   if (box) { box.style.display = 'none'; box.textContent = ''; }
   const btn = $('jobActBtn');
-  if (btn) { btn.textContent = '取消'; btn.className = 'btn danger'; btn.onclick = cancelJob; }
+  if (btn) { btn.textContent = '取消'; btn.className = 'btn danger'; btn.onclick = cancelJob; btn.disabled = false; }
   const retry = $('jobRetryBtn');
   if (retry) { retry.style.display = 'none'; retry.onclick = null; }
   setTaskStart(true);
@@ -1087,10 +1090,23 @@ function resetLiveJob() {
 async function cancelJob() {
   const id = currentJob && currentJob.id;
   if (!id) { toast('当前没有进行中的任务'); return; }
+  const btn = $('jobActBtn');
+  btn.disabled = true;
   try {
     await api('/api/jobs/' + id + '/cancel', { method: 'POST' });
-    toast('已发送取消请求');
-  } catch (e) { toast('取消失败：' + e.message); }
+  } catch (e) {
+    btn.disabled = false;
+    toast('取消失败：' + e.message);
+  }
+}
+/* 取消已受理、工具还没退出。等密码阶段最多要等半分钟：工具要先通知手机结束这次备份，
+   直接强杀的话手机端要过几分钟才接受下一次备份。这段时间按钮保持禁用，别让人以为没点上 */
+function showCanceling(grace) {
+  const btn = $('jobActBtn');
+  btn.disabled = true;
+  btn.textContent = '正在取消…';
+  $('prPhase').textContent = '正在取消';
+  $('jPhase').textContent = grace > 5 ? '正在取消（等手机响应，最多 ' + Math.round(grace) + ' 秒）' : '正在取消';
 }
 
 /* ---------- 任务历史 + 当前可恢复 ---------- */

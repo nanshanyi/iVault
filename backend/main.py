@@ -854,6 +854,9 @@ async def job_events(job_id: str):
     # 否则要等到下一次进度或换文件才出现，刷新页面看起来像丢了状态
     for slot, text in job.live_snapshot().items():
         q.put_nowait({"type": "live", "slot": slot, "text": text})
+    # 取消进行中刷新页面：按钮要回到「正在取消…」，不能又变成可点的「取消」
+    if job.status == "CANCELING":
+        q.put_nowait({"type": "canceling", "grace": job._cancel_grace()})
 
     async def gen():
         try:
