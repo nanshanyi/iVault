@@ -7,18 +7,18 @@
 import asyncio
 import calendar
 import collections
+import contextlib
 import datetime
 import hashlib
 import hmac
 import logging
 import os
 import re
-import secrets
 import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, device, jobs, notify, store
@@ -70,7 +70,27 @@ VERSION = _raw_ver[1:] if _raw_ver[:1] in ("v", "V") else _raw_ver
 # openapi_url 也挪进 /api：默认挂在根路径 /openapi.json，会绕过鉴权中间件
 # 把全部接口结构暴露给未登录访客。只是接口列表、拿不到数据，但一行就能堵上，
 # 没有理由留着；挪进来之后 /api/docs 照常可用（登录后）。
-app = FastAPI(title="iVault", version=VERSION,
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """启动与关停。用 lifespan 而不是 @app.on_event：后者在 FastAPI 里已弃用，
+    哪天被移除，启动钩子就静默不跑——设备轮询、调度、清理全都不起，也没有任何报错。
+
+    后台任务要留着引用：asyncio 对 create_task 只持弱引用，没人拿着的任务
+    可能在运行中途被垃圾回收掉。关停时逐个取消，免得退出时报「任务被销毁但仍挂起」
+    """
+    await startup()
+    try:
+        yield
+    finally:
+        for t in _bg_tasks:
+            t.cancel()
+        await asyncio.gather(*_bg_tasks, return_exceptions=True)
+        _bg_tasks.clear()
+
+
+_bg_tasks: list[asyncio.Task] = []
+
+app = FastAPI(title="iVault", version=VERSION, lifespan=_lifespan,
               docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 # 前端每 6 秒刷一轮状态，一次 4 个请求 —— 开着 uvicorn 的 access log 时，
@@ -299,7 +319,6 @@ def _json_dumps(obj) -> str:
 
 # ---------------- 基础 ----------------
 
-@app.on_event("startup")
 async def startup():
     store.init_db()
     # 上次退出时还在跑的任务不会自己收尾：内存里的 Job 已经没了，
@@ -310,10 +329,8 @@ async def startup():
             log.warning("上次退出时有 %d 个未收尾的备份记录，已标记为失败", stale)
     except Exception as e:  # noqa: BLE001
         log.warning("对账历史备份记录失败：%s", e)
-    asyncio.create_task(_device_poller())
-    asyncio.create_task(_battery_sampler())
-    asyncio.create_task(_history_pruner())
-    asyncio.create_task(_scheduler_loop())
+    _bg_tasks.extend(asyncio.create_task(c) for c in (
+        _device_poller(), _battery_sampler(), _history_pruner(), _scheduler_loop()))
     # 启动行带上关键配置：单看容器日志就能知道是哪个版本、开了什么
     sched = (_schedule_text(_schedule_cfg())
              if store.get_setting("schedule_enabled") in ("1", "true", "True") else "关闭")
@@ -982,7 +999,7 @@ async def test_webhook(body: dict | None = None):
     if not url:
         raise HTTPException(400, "请先填写 Webhook 地址")
     try:
-        await asyncio.get_event_loop().run_in_executor(None, notify.send_test, url)
+        await asyncio.get_running_loop().run_in_executor(None, notify.send_test, url)
     except Exception as e:  # noqa: BLE001
         log.warning("webhook 测试发送失败：%s", e)
         return {"ok": False, "error": str(e) or repr(e)}

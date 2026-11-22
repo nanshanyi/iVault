@@ -109,8 +109,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libusb-1.0-0 libavahi-client3 libssl3t64 libreadline8t64 libcurl4t64 \
       python3 python3-pip ca-certificates tzdata procps \
  && rm -rf /var/lib/apt/lists/*
-RUN pip3 install --no-cache-dir --break-system-packages \
-      'fastapi>=0.110' 'uvicorn[standard]>=0.29'
+# 版本以 backend/requirements.txt 为准（钉死），不在这里另写一份
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
+ && rm /tmp/requirements.txt
 
 COPY --from=build /usr/local /usr/local
 COPY --from=build /opt/usbmuxd-stock /opt/usbmuxd-stock

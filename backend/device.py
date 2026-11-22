@@ -134,7 +134,7 @@ async def scan_devices(include_net: bool = True, probe: str | None = None) -> li
     if todo:
         oks = await asyncio.gather(*(_net_alive(u) for u in todo))
         at = time.time()
-        for u, ok in zip(todo, oks):
+        for u, ok in zip(todo, oks, strict=True):
             prev = _net_probe.get(u)
             fails = 0 if ok else ((prev["fails"] if prev and not prev["ok"] else 0) + 1)
             _net_probe[u] = {"ok": ok, "at": at, "fails": fails}
@@ -581,7 +581,7 @@ class PairSession:
         })
 
     async def run(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         # 阶段 1：等待「新的」设备插线（最多 5 分钟）
         #
         # 关键：必须跳过已经配对并入库的设备。否则用户插着一台已配对的 iPhone 点

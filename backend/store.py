@@ -1,5 +1,4 @@
 """SQLite 元数据存储（设备 / 备份记录 / 设置）。"""
-import json
 import logging
 import sqlite3
 import threading

@@ -1,2 +1,6 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
+# 直接依赖钉死版本：同一个 tag 隔几个月重新构建，装到的必须是同一套。
+# 升级时改这里，跑一遍本地测试再发版。传递依赖（starlette / pydantic 等）由 pip 按
+# 这两个版本的约束解析：镜像是 Debian trixie 自带的 Python 3.13，全钉死的话某个包
+# 没有 3.13 的预编译轮子就会构建失败
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
