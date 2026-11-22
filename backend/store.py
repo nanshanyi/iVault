@@ -230,7 +230,7 @@ def backup_attempts_since(udid: str, ts: int) -> list[dict]:
     算上「结束于 ts 之后」的：定时时刻前开跑、之后才完成的备份也算今天这一轮。
     """
     rows = conn().execute(
-        "SELECT status, started_at, finished_at FROM backups "
+        "SELECT status, started_at, finished_at, error FROM backups "
         "WHERE udid=? AND kind='BACKUP' AND (started_at>=? OR finished_at>=?) ORDER BY id",
         (udid, ts, ts),
     ).fetchall()
@@ -249,8 +249,18 @@ def delete_backup(backup_id: int) -> dict | None:
 # ---------- settings ----------
 
 DEFAULTS = {
-    "schedule_enabled": "true",
-    "schedule_time": "03:00",
+    # 定时备份默认关：iOS 16.1 起每次备份都要在手机上输锁屏密码，默认开着、
+    # 默认凌晨跑，新装第一晚就会挂着等一个没人输的密码。由用户选一个在手机旁边的时间
+    "schedule_enabled": "false",
+    "schedule_time": "21:00",
+    # daily | weekly | monthly
+    "schedule_freq": "daily",
+    # 每周：ISO 星期（1=周一 … 7=周日），逗号分隔，可多选
+    "schedule_weekdays": "6",
+    # 每月：1–31，小月没有这一天时在当月最后一天跑
+    "schedule_monthday": "1",
+    # 插线自动备份：iPhone 插到 NAS 的 USB 口、当天还没备份过就自动开始。默认关
+    "usb_autobackup": "false",
     "notify_webhook": "",
     # 通知范围：all = 成功/失败/取消都推；failure = 只在失败或取消时推。
     # 每天一次的成功通知对部分用户是打扰，这个偏好应该由用户选。

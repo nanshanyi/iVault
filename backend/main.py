@@ -5,6 +5,7 @@
 容器 entrypoint 会先拉起 usbmuxd（USB 通道 + 配对证书目录），再启动本服务。
 """
 import asyncio
+import calendar
 import collections
 import datetime
 import hashlib
@@ -313,13 +314,36 @@ async def startup():
     asyncio.create_task(_battery_sampler())
     asyncio.create_task(_scheduler_loop())
     # 启动行带上关键配置：单看容器日志就能知道是哪个版本、开了什么
-    sched = (store.get_setting("schedule_time") or "03:00"
+    sched = (_schedule_text(_schedule_cfg())
              if store.get_setting("schedule_enabled") in ("1", "true", "True") else "关闭")
-    log.info("iVault v%s 启动完成 · 访问密码%s · 无线%s · 定时备份 %s · "
+    usb = "开" if store.get_setting("usb_autobackup") in ("1", "true", "True") else "关"
+    log.info("iVault v%s 启动完成 · 访问密码%s · 无线%s · 定时备份 %s · 插线备份 %s · "
              "最低电量 %d%% · 最低剩余 %g GB · 备份目录 %s",
              VERSION, "已开启" if config.PASSWORD else "未开启",
-             "已启用" if config.WIFI_ENABLED else "未启用", sched,
+             "已启用" if config.WIFI_ENABLED else "未启用", sched, usb,
              config.MIN_BATTERY, config.MIN_FREE_GB, config.BACKUP_DIR)
+
+
+# 无线手机锁屏后，netmuxd 会周期性把它从列表里摘掉、mDNS 重新发现后再加回
+# （实测锁屏一夜 42 次，大约每 10 分钟一次，离线中位 73 秒）。离线不满这么久就
+# 回来的不记上下线日志，否则容器日志一夜就被刷满，导出时只剩这些
+OFFLINE_LOG_GRACE = 120
+_offline_pending: dict[str, tuple[float, str]] = {}   # udid -> (离线时刻, 离线前的连接方式)，还没记日志
+_first_scan = True      # 进程内第一次扫描：那时 old 是空的，a 为 None 不代表「刚离线」
+
+
+# 插线自动备份：设备从「不是 USB」变成 USB 就算插上了一次。两种「假插线」要排除：
+#   · 进程首扫：容器重启时手机本来就插着，不是用户刚插
+#   · usbmuxd 被看护重启（另一台设备插线时会发生）：已经插着的设备会短暂掉线又回来
+# 后者靠「上一次看到它在 USB 上」的时间判断：不到 USB_REPLUG_GAP 秒就回来的不算
+USB_REPLUG_GAP = 20
+_usb_seen_at: dict[str, float] = {}   # udid -> 最近一次扫描到它在 USB 上的时间
+_usb_plugged: set[str] = set()        # 刚插上、等 _device_poller 处理的设备
+
+
+def _device_label(udid: str) -> str:
+    d = store.get_device(udid)
+    return ((d or {}).get("name") or "…" + udid[-6:]) + ("" if d else "（未配对）")
 
 
 async def _refresh_transports(probe: str | None = None) -> None:
@@ -328,30 +352,103 @@ async def _refresh_transports(probe: str | None = None) -> None:
     probe=udid：马上要对这台设备动手（备份、恢复、改加密），无线探活不走缓存，
     避免对一台 60 秒内已经离开的手机发起任务。
     """
+    global _first_scan
     devs = await device.scan_devices(probe=probe)
     old = _state["transports"]
     new = {d["udid"]: d["connection"] for d in devs}
     # 离线或换了连接方式时旧电量作废：无线换成 USB 就是插上线开始充电了，
     # 留着旧读数的话，调度器要等它过期（无线 10 分钟）才发现可以备份
     label = {device.TRANSPORT_USB: "USB", device.TRANSPORT_NET: "Wi-Fi"}
+    now = time.time()
+    # 插线检测放在这里而不是 _device_poller：备份、恢复、改加密的接口也会调这个函数，
+    # 插线那一下可能被它们先看到。这里只登记，由 _device_poller 统一处理
+    for udid, conn in new.items():
+        if conn != device.TRANSPORT_USB:
+            continue
+        if (old.get(udid) != device.TRANSPORT_USB and not _first_scan
+                and now - _usb_seen_at.get(udid, 0) >= USB_REPLUG_GAP):
+            _usb_plugged.add(udid)
+        _usb_seen_at[udid] = now
     for udid in set(old) | set(new):
-        if old.get(udid) != new.get(udid):
-            device.battery_forget(udid)
-            # 只在状态变化时记一条：排查无线「时有时无」最需要这条时间线
-            d = store.get_device(udid)
-            name = (d or {}).get("name") or "…" + udid[-6:]
-            log.info("设备 %s%s：%s → %s", name, "" if d else "（未配对）",
-                     label.get(old.get(udid), "离线"), label.get(new.get(udid), "离线"))
+        a, b = old.get(udid), new.get(udid)
+        if a == b:
+            continue
+        device.battery_forget(udid)
+        # 进程首扫时 old 是空字典，a 为 None 只是「还没有记录」，不是刚离线。
+        # 不拦的话每次重启都会为每台在线设备刷一条「离线 → Wi-Fi」
+        if a is None and _first_scan:
+            continue
+        # 只在状态变化时记一条：排查无线「时有时无」最需要这条时间线。
+        # 掉线先挂起，满 OFFLINE_LOG_GRACE 还没回来才记（见下方）
+        if b is None:
+            _offline_pending[udid] = (now, a)
+            continue
+        if a is None and udid in _offline_pending:
+            _, before = _offline_pending.pop(udid)
+            if before == b:
+                continue                      # 短暂掉线又回来：不记
+            a = before                        # 掉线期间换了通道（如 Wi-Fi → USB）：记通道变化
+        log.info("设备 %s：%s → %s", _device_label(udid), label.get(a, "离线"), label.get(b))
+    _first_scan = False
+    for udid, (since, before) in list(_offline_pending.items()):
+        if now - since >= OFFLINE_LOG_GRACE:
+            _offline_pending.pop(udid)
+            log.info("设备 %s：%s → 离线（自 %s 起）", _device_label(udid), label.get(before),
+                     datetime.datetime.fromtimestamp(since).strftime("%H:%M:%S"))
     _state["online_devices"] = [d["udid"] for d in devs]
     _state["transports"] = new
     device.set_transports(new)   # 命令层据此决定是否加 -n
 
 
+_USB_DONE = {"COMPLETE": "成功备份过", "RUNNING": "有备份在跑", "CANCELED": "手动取消过备份"}
+
+
+async def _usb_autobackup():
+    """处理刚插上 USB 的设备：开着插线自动备份、今天是备份日、当天还没备份过就开始。
+
+    备份日和定时备份共用「频率」设置（每天 / 每周几 / 每月几号），不看备份时间：
+    选了每周六，就只有周六插线才会自动备份，哪个钟点插都行。
+    当天（本地零点起）有成功、正在跑、或被手动取消的备份就不再触发：取消说明用户
+    这次不想备份。失败的不算，拔插一次就是用户在说「再来一次」。
+    不查电量：插着线就在充电。不推等密码提醒：人刚插线，手机就在手边。
+    """
+    if not _usb_plugged:
+        return
+    pending = list(_usb_plugged)
+    _usb_plugged.clear()                      # 开关关着也要清掉，别等打开后补发一堆旧的
+    if store.get_setting("usb_autobackup") not in ("1", "true", "True"):
+        return
+    today = datetime.date.today()
+    cfg = _schedule_cfg()
+    is_day = _runs_on(today, cfg)
+    midnight = int(datetime.datetime.combine(today, datetime.time()).timestamp())
+    for udid in pending:
+        # 没配对的（配对向导里刚插上的那台）跳过；配对完它已经插着，也不会再触发
+        if not store.get_device(udid):
+            continue
+        if _state["transports"].get(udid) != device.TRANSPORT_USB or jobs.busy_job(udid):
+            continue
+        if not is_day:
+            log.info("插线自动备份跳过 %s：今天不是备份日（%s）", _device_label(udid), _days_text(cfg))
+            continue
+        done = [t["status"] for t in store.backup_attempts_since(udid, midnight)
+                if t["status"] in _USB_DONE]
+        if done:
+            log.info("插线自动备份跳过 %s：今天已经%s", _device_label(udid), _USB_DONE[done[-1]])
+            continue
+        try:
+            jobs.start_backup(udid, job_id=uuid.uuid4().hex, trigger="usb")
+            log.info("插线自动备份已触发：%s", _device_label(udid))
+        except jobs.DeviceBusy:
+            pass
+
+
 async def _device_poller():
-    """每 3 秒刷新在线设备（USB + 无线），供状态灯与命令通道选择使用。"""
+    """每 3 秒刷新在线设备（USB + 无线），供状态灯与命令通道选择使用；顺带处理插线自动备份。"""
     while True:
         try:
             await _refresh_transports()
+            await _usb_autobackup()
         except Exception as e:
             log.warning("device poller: %s", e)
         await asyncio.sleep(3)
@@ -674,6 +771,10 @@ async def job_events(job_id: str):
     q.put_nowait({"type": "progress", "progress": job.progress, "phase": job.phase})
     for line in job.log_tail[-100:]:
         q.put_nowait({"type": "log", "line": line})
+    # 底部两行常驻（进度 / 当前文件）是前端原地刷新的：重连时补一次快照，
+    # 否则要等到下一次进度或换文件才出现，刷新页面看起来像丢了状态
+    for slot, text in job.live_snapshot().items():
+        q.put_nowait({"type": "live", "slot": slot, "text": text})
 
     async def gen():
         try:
@@ -688,13 +789,14 @@ async def job_events(job_id: str):
 
 
 def _client_label(request: Request) -> str:
-    """给日志看的请求来源，回答「谁点的」。
+    """给日志看的请求来源，回答「谁点的」。只用于日志展示，不参与任何鉴权。
 
-    反向代理后面 client.host 是 127.0.0.1，没有意义：优先取 X-Forwarded-For 第一段，
-    取不到且是回环就只写「来自网页」。只用于日志展示，不参与任何鉴权（这个头可以伪造）。
+    不自己读 X-Forwarded-For：它的第一段是客户端可以随便填的。uvicorn 默认信任
+    来自 127.0.0.1 的代理头（--forwarded-allow-ips 默认值），并且取的是代理自己追加的
+    那一段，所以本机反向代理后面 client.host 已经是真实客户端，直连时就是对端地址。
+    剩下回环地址（代理没加头、或容器内自己请求）没有意义，只写「来自网页」。
     """
-    xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    host = xff or (request.client.host if request.client else "")
+    host = request.client.host if request.client else ""
     if not host or host in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
         return "来自网页"
     return f"来自网页 · {host}"
@@ -811,7 +913,8 @@ async def settings():
 
 @app.put("/api/settings")
 async def put_settings(body: dict):
-    allowed = {"schedule_enabled", "schedule_time", "notify_webhook", "notify_scope", "log_verbose"}
+    allowed = {"schedule_enabled", "schedule_time", "schedule_freq", "schedule_weekdays",
+               "schedule_monthday", "usb_autobackup", "notify_webhook", "notify_scope", "log_verbose"}
     # 校验并规范化：时间统一成 HH:MM。
     # 没有「保留份数」之类的设置：备份是单目录覆盖模式，磁盘上始终只有
     # 最新一次可恢复状态，历史记录只记账不回收，也不需要配置。
@@ -820,8 +923,28 @@ async def put_settings(body: dict):
         if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
             raise HTTPException(400, "备份时间格式应为 HH:MM（00:00–23:59）")
         body["schedule_time"] = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
+    if "schedule_freq" in body and str(body["schedule_freq"]) not in ("daily", "weekly", "monthly"):
+        raise HTTPException(400, "频率只支持 daily（每天）、weekly（每周）、monthly（每月）")
+    if "schedule_weekdays" in body:
+        try:
+            days = sorted({int(x) for x in str(body["schedule_weekdays"]).split(",") if x.strip()})
+        except ValueError:
+            days = []
+        if not days or not all(1 <= d <= 7 for d in days):
+            raise HTTPException(400, "每周至少选一天（1=周一 … 7=周日）")
+        body["schedule_weekdays"] = ",".join(map(str, days))
+    if "schedule_monthday" in body:
+        try:
+            mday = int(str(body["schedule_monthday"]).strip())
+        except ValueError:
+            mday = 0
+        if not 1 <= mday <= 31:
+            raise HTTPException(400, "每月的日期应为 1–31")
+        body["schedule_monthday"] = str(mday)
     if "notify_scope" in body and str(body["notify_scope"]) not in ("all", "failure"):
         raise HTTPException(400, "通知范围只支持 all（全部结果）或 failure（仅失败与取消）")
+    if "usb_autobackup" in body and str(body["usb_autobackup"]) not in ("true", "false"):
+        raise HTTPException(400, "插线自动备份只能是 true（开）或 false（关）")
     if "log_verbose" in body and str(body["log_verbose"]) not in ("true", "false"):
         raise HTTPException(400, "日志详细度只能是 true（详细）或 false（精简）")
     for k, v in body.items():
@@ -852,21 +975,77 @@ async def test_webhook(body: dict | None = None):
 # 不设上限的话，磁盘满这类必然失败的原因会每 20 秒起一个任务、发一条失败通知。
 SCHED_MAX_ATTEMPTS = 3
 SCHED_RETRY_GAP = 1800
+# 补跑窗口：设定时刻之后这么久内，设备上线就发起。以前是到午夜，但每次备份都要
+# 在手机上输密码，23 点多才发起的那次多半没人看见，只会挂满等待上限再失败
+SCHED_WINDOW = 3 * 3600
+
+
+def _schedule_cfg() -> dict:
+    """读出定时设置。值都在 PUT /api/settings 校验过，这里只做兜底解析。"""
+    try:
+        hh, mm = (store.get_setting("schedule_time") or "21:00").split(":")
+        at = datetime.time(int(hh), int(mm))
+    except ValueError:
+        at = datetime.time(21, 0)
+    days = {int(x) for x in (store.get_setting("schedule_weekdays") or "").split(",")
+            if x.strip().isdigit() and 1 <= int(x) <= 7}
+    try:
+        mday = max(1, min(31, int(store.get_setting("schedule_monthday") or 1)))
+    except ValueError:
+        mday = 1
+    return {"time": at, "freq": store.get_setting("schedule_freq") or "daily",
+            "weekdays": days, "monthday": mday}
+
+
+def _days_text(cfg: dict) -> str:
+    """备份日描述：每天 / 每周六、日 / 每月 1 日。"""
+    if cfg["freq"] == "weekly":
+        return "每周" + "、".join("一二三四五六日"[d - 1] for d in sorted(cfg["weekdays"]))
+    if cfg["freq"] == "monthly":
+        return f"每月 {cfg['monthday']} 日"
+    return "每天"
+
+
+def _schedule_text(cfg: dict) -> str:
+    """给日志看的计划描述：每天 21:00 / 每周六、日 21:00 / 每月 1 日 21:00。"""
+    return f"{_days_text(cfg)} {cfg['time'].strftime('%H:%M')}"
+
+
+def _runs_on(day: datetime.date, cfg: dict) -> bool:
+    """这一天是不是计划日。每月 31 号这类设置在小月落到当月最后一天。"""
+    if cfg["freq"] == "weekly":
+        return day.isoweekday() in cfg["weekdays"]
+    if cfg["freq"] == "monthly":
+        return day.day == min(cfg["monthday"], calendar.monthrange(day.year, day.month)[1])
+    return True
+
+
+def _last_occurrence(now: datetime.datetime, cfg: dict) -> datetime.datetime | None:
+    """不晚于 now 的最近一次计划时刻；只看今天和昨天（窗口 3 小时，最多跨过一次午夜）。"""
+    for back in (0, 1):
+        day = now.date() - datetime.timedelta(days=back)
+        at = datetime.datetime.combine(day, cfg["time"])
+        if at <= now and _runs_on(day, cfg):
+            return at
+    return None
 
 
 def _sched_due(udid: str, since: int, now: float) -> bool:
-    """今天的定时备份对这台设备是否还欠着。
+    """这一轮定时备份对这台设备是否还欠着。
 
-    看的是设定时刻之后的备份记录（手动备份也算）：
-      · 已有成功的        → 今天的已完成
-      · 有被取消的        → 用户主动叫停，今天不再自动重来
-      · 失败满 3 次        → 放弃到明天，避免反复失败刷通知
+    看的是本轮计划时刻之后的备份记录（手动备份也算）：
+      · 已有成功的          → 这一轮已完成
+      · 有被取消的          → 用户主动叫停，不再自动重来
+      · 有等手机超时的      → 多半没人输锁屏密码，再试只会再弹一次窗，不重来
+      · 失败满 3 次          → 放弃这一轮，避免反复失败刷通知
       · 上次失败不到 30 分钟 → 等一等再补
     """
     tries = store.backup_attempts_since(udid, since)
     if any(t["status"] in ("COMPLETE", "CANCELED", "RUNNING") for t in tries):
         return False
     failed = [t for t in tries if t["status"] == "FAILED"]
+    if any((t.get("error") or "").startswith(jobs.WAIT_TIMEOUT_PREFIX) for t in failed):
+        return False
     if len(failed) >= SCHED_MAX_ATTEMPTS:
         return False
     if failed:
@@ -877,26 +1056,24 @@ def _sched_due(udid: str, since: int, now: float) -> bool:
 
 
 async def _scheduler_loop():
-    """每天到设定时刻之后，给当天还没成功备份过的在线设备跑一次备份。
+    """到了计划时刻（每天 / 每周几 / 每月几号），给这一轮还没成功备份过的在线设备跑一次。
 
-    以前只在「当前分钟 == 设定时刻」那一下触发，并且先写 _last_run 再看设备：
-    03:00 手机恰好在 Wi-Fi 休眠或没插线，当天就整天不备份，失败了也不再试。
-    现在设定时刻到午夜之间都是补跑窗口：设备什么时候上线、什么时候补上，
-    失败按 _sched_due 的规则有限次重试。
+    以前只在「当前分钟 == 设定时刻」那一下触发：到点时手机恰好不在线就整天不备份。
+    现在计划时刻之后 SCHED_WINDOW 内都是补跑窗口，设备什么时候上线就什么时候补，
+    失败按 _sched_due 的规则有限次重试。发起后手机会要求输锁屏密码，等待上限
+    见 jobs.WAIT_TIMEOUT_SCHEDULE。
     """
-    battery_logged: set[str] = set()      # 电量不足的跳过日志：每台设备每天只记一次
-    logged_day = ""
+    battery_logged: set[str] = set()      # 电量不足的跳过日志：每台设备每轮只记一次
+    logged_round = 0
     while True:
         try:
             if store.get_setting("schedule_enabled") in ("1", "true", "True"):
-                hh, mm = (store.get_setting("schedule_time") or "03:00").split(":")
-                today = datetime.date.today()
-                since = int(datetime.datetime.combine(
-                    today, datetime.time(int(hh), int(mm))).timestamp())
+                occ = _last_occurrence(datetime.datetime.now(), _schedule_cfg())
+                since = int(occ.timestamp()) if occ else 0
                 now = time.time()
-                if today.isoformat() != logged_day:
-                    logged_day, battery_logged = today.isoformat(), set()
-                if now >= since:
+                if since != logged_round:
+                    logged_round, battery_logged = since, set()
+                if occ and now - since < SCHED_WINDOW:
                     for d in store.list_devices():
                         udid = d["udid"]
                         # 手动备份 / 恢复 / 改加密正在进行时让路，下一轮再看
@@ -926,7 +1103,7 @@ async def _scheduler_loop():
                             continue
                         # 设备互斥仍由 jobs._claim 裁决，这里只接住 DeviceBusy
                         try:
-                            jobs.start_backup(udid, job_id=uuid.uuid4().hex)
+                            jobs.start_backup(udid, job_id=uuid.uuid4().hex, trigger="schedule")
                             log.info("定时备份已触发: %s", udid)
                         except jobs.DeviceBusy:
                             pass

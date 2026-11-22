@@ -379,9 +379,11 @@ html[data-view="settings"] #view-settings{display:block}
 .term .dim{color:#4a6a5c}
 /* 一行一个 div：便于按行裁剪，long 输出也不会撑破容器 */
 .term .ln{white-space:pre-wrap;word-break:break-all}
-/* 活动行：当前正在收发的文件，原地刷新。颜色略亮，一眼能和历史行区分 */
+/* 常驻行：底部两行原地刷新。文件行是「正在动」，进度行是「走到哪了」 */
 .term .ln.live{color:#9ff0cd}
 .term .ln.live::before{content:"▸ ";color:var(--green2)}
+.term .ln.live.progress{color:var(--txt2)}
+.term .ln.live.progress::before{content:""}
 
 /* ===== 设备卡片上的任务进度带（仅任务进行中显示） ===== */
 .dev-prog{padding:0 20px 18px}
@@ -466,6 +468,14 @@ td b{color:var(--txt);font-weight:600}
   font-size:13.5px;font-weight:600;color-scheme:var(--cs);width:108px;cursor:pointer}
 .time-ipt input::-webkit-calendar-picker-indicator{opacity:.6;cursor:pointer}
 .time-ipt.off{opacity:.42;pointer-events:none}
+.time-ipt select{background:none;border:none;outline:none;color:var(--txt);font-family:var(--mono);
+  font-size:13.5px;font-weight:600;color-scheme:var(--cs);cursor:pointer}
+/* 自动备份关闭时，频率、星期、日期、时间一起变灰不可点 */
+.sched-dim.off{opacity:.42;pointer-events:none}
+.seg.wd span{padding:6px 9px}
+.sched-note{margin-top:4px;padding:10px 12px;border-radius:10px;background:rgba(245,177,61,.1);
+  color:var(--txt2);font-size:11.5px;line-height:1.85}
+.sched-note b{color:var(--amber)}
 
 /* ===== 登录 ===== */
 .auth-input{width:260px;background:var(--input-bg);border:1px solid var(--stroke);border-radius:10px;
@@ -567,7 +577,7 @@ td b{color:var(--txt);font-weight:600}
   /* —— 设置 —— */
   /* iOS Safari：输入框字号小于 16px 时，一获得焦点就会放大整页，输完还得手动缩回。
      手机上统一抬到 16px，视觉差别很小，交互差别很大 */
-  #whInput,#timeInput,.auth-input,.dlg-input{font-size:16px}
+  #whInput,#timeInput,#mdInput,.auth-input,.dlg-input{font-size:16px}
   .set-row{flex-direction:column;align-items:stretch;gap:10px}
   .set-row .btn{align-self:flex-start}
   .set-row .seg{width:100%}
@@ -791,13 +801,27 @@ td b{color:var(--txt);font-weight:600}
     <div>
       <div class="card" style="margin-bottom:16px">
         <b style="font-size:14.5px">备份计划</b>
-        <div class="set-row"><div><div class="k">每天自动备份</div><div class="d">到达设定时间时对所有在线设备触发</div></div>
+        <div class="set-row"><div><div class="k">插上 USB 自动备份</div><div class="d">iPhone 插到 NAS 的 USB 口时，若今天是备份日且还没备份过，就自动开始</div></div>
+          <div class="switch" id="swUsb" onclick="toggleSwitch(this)"></div></div>
+        <div class="set-row"><div><div class="k">定时备份</div><div class="d">到点对所有在线设备发起一次备份</div></div>
           <div class="switch" id="swSched" onclick="toggleSwitch(this)"></div></div>
-        <div class="set-row"><div><div class="k">备份时间</div><div class="d">每天到达该时刻，对所有在线设备触发一次备份</div></div>
+        <div class="set-row"><div><div class="k">频率</div><div class="d">定时备份和插线备份都只在这些日子进行</div></div>
+          <div class="seg sched-dim" id="schedFreq"><span data-v="daily">每天</span><span data-v="weekly">每周</span><span data-v="monthly">每月</span></div></div>
+        <div class="set-row" id="wdRow"><div><div class="k">星期</div><div class="d">可多选</div></div>
+          <div class="seg sched-dim wd" id="schedWeekdays"><span data-v="1">一</span><span data-v="2">二</span><span data-v="3">三</span><span data-v="4">四</span><span data-v="5">五</span><span data-v="6">六</span><span data-v="7">日</span></div></div>
+        <div class="set-row" id="mdRow"><div><div class="k">日期</div><div class="d">小月没有这一天时，在当月最后一天备份</div></div>
+          <div class="time-ipt sched-dim"><select id="mdInput" aria-label="每月几号"></select></div></div>
+        <div class="set-row"><div><div class="k">备份时间</div><div class="d">定时备份用：到点后 3 小时内设备上线都会发起，过了这段就等下一次</div></div>
           <div class="time-ipt" id="timeBox">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg>
-            <input type="time" id="timeInput" value="03:00" step="60" aria-label="每天自动备份时间">
+            <input type="time" id="timeInput" value="21:00" step="60" aria-label="自动备份时间">
           </div></div>
+        <div class="sched-note">
+          <b>每次备份都要在 iPhone 上输一次锁屏密码。</b>这是 iOS 16.1 起的系统要求，Finder、iMazing 也一样，关不掉。
+          <br>插线备份：备份日当天插上、当天还没备份过才会开始，哪个钟点插都行；插上后手机会弹出密码框，输入即可开始。
+          <br>定时备份：到点后 iVault 会发起备份，并通过下方「通知」里的 Webhook 提醒你去输密码；20 分钟内没输入就放弃，这一次不再重试。
+          请选一个你通常在手机旁边的时间，比如晚上在家时，深夜的定时备份基本跑不成。
+        </div>
       </div>
       <div class="card">
         <b style="font-size:14.5px">通知</b>

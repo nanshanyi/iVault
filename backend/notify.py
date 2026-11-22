@@ -147,6 +147,31 @@ def task_finished(kind: str, status: str, udid: str, *,
     loop.run_in_executor(None, lambda: _safe_post(url, payload, label))
 
 
+def passcode_needed(udid: str, tag: str, minutes: int) -> None:
+    """定时备份等到了锁屏密码：提醒用户去手机上输入。
+
+    不受「通知范围」限制：它不是结果通知，是这次备份能不能跑成的前提，
+    选了「仅失败与取消」的人也需要它。
+    """
+    url = (store.get_setting("notify_webhook") or "").strip()
+    if not url:
+        return
+    name = _device_label(udid)
+    title = f"iVault：请在「{name}」上输入锁屏密码"
+    body = f"定时备份已开始，{minutes} 分钟内没输入会自动放弃"
+    payload = {
+        "event": "backup.passcode", "text": f"{title}：{body}", "title": title, "body": body,
+        "group": "iVault", "kind": "BACKUP", "udid": udid, "device": name, "ts": int(time.time()),
+    }
+    label = f"· {tag} backup.passcode"
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _safe_post(url, payload, label)
+        return
+    loop.run_in_executor(None, lambda: _safe_post(url, payload, label))
+
+
 def send_test(url: str):
     """发送一条测试通知。失败直接抛异常，由调用方决定如何呈现给用户。"""
     _post(url, label="· 测试通知", payload={

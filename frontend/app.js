@@ -153,10 +153,13 @@ const TERM_MAX_LINES = 300;   // 终端最多保留的行数
 const TERM_LINE_MAX = 600;    // 单行最长字符数（超长输出截断，防止一条撑爆布局）
 let logQueue = [];
 let logRaf = 0;
-/* 活动行：终端最后那一行，收到新状态就改文本而不是追加。
-   idevicebackup2 本来就是用 \r 原地刷新，后端把那些帧转成 live 事件发过来，
-   这里还原成"一行在走"的观感，日志行数也不会被进度帧撑爆。 */
-let liveRow = null;
+/* 常驻行：终端底部固定两行，收到新状态只改文本、不追加。
+     progress —— 正在备份 6% · 已用 12 分
+     file     —— 正在接收 …/xxx.js
+   以前只有一行，进度帧和文件帧互相顶掉，看起来一直在闪。
+   idevicebackup2 本来就是用 \r 原地刷新，后端把那些帧转成带 slot 的 live 事件。 */
+let liveRows = { progress: null, file: null };
+const LIVE_SLOTS = ['progress', 'file'];
 function queueLog(line) {
   if (line.length > TERM_LINE_MAX) line = line.slice(0, TERM_LINE_MAX) + ' …';
   logQueue.push(line);
@@ -182,36 +185,49 @@ function flushLog() {
     frag.appendChild(row);
   });
   logQueue = [];
-  /* 有活动行时插到它前面：活动行永远贴在底部，不会被后来的普通行顶到中间 */
-  if (liveRow && liveRow.parentNode === term) term.insertBefore(frag, liveRow);
+  /* 普通日志插到常驻行前面：两行常驻永远贴在底部，不会被后来的日志顶到中间 */
+  const anchor = LIVE_SLOTS.map(s => liveRows[s]).find(r => r && r.parentNode === term);
+  if (anchor) term.insertBefore(frag, anchor);
   else term.appendChild(frag);
   while (term.children.length > TERM_MAX_LINES) term.removeChild(term.firstChild);
-  if (liveRow && !liveRow.isConnected) liveRow = null;   // 被行数上限裁掉了
+  LIVE_SLOTS.forEach(s => {
+    if (liveRows[s] && !liveRows[s].isConnected) liveRows[s] = null;   // 被行数上限裁掉了
+  });
   $('jSpeed').textContent = logCount + ' 行';
   term.scrollTop = term.scrollHeight;
 }
-/* 末行原地替换：没有活动行就新建一条，有就只改文本和它的时间戳 */
-function renderLive(text) {
+/* 原地替换：同一个 slot 没有行就新建，有就只改文本和时间戳；顺序固定进度在上、文件在下 */
+function renderLive(text, slot) {
   const term = $('term');
   if (!term) return;
+  if (!LIVE_SLOTS.includes(slot)) slot = 'file';
   if (text.length > TERM_LINE_MAX) text = text.slice(0, TERM_LINE_MAX) + ' …';
-  if (!liveRow || !liveRow.isConnected) {
-    liveRow = document.createElement('div');
-    liveRow.className = 'ln live';
+  let row = liveRows[slot];
+  if (!row || !row.isConnected) {
+    row = document.createElement('div');
+    row.className = 'ln live ' + slot;
+    row.dataset.slot = slot;
     const t = document.createElement('span');
     t.className = 'dim';
-    liveRow.appendChild(t);
-    liveRow.appendChild(document.createTextNode(''));
-    term.appendChild(liveRow);
+    row.appendChild(t);
+    row.appendChild(document.createTextNode(''));
+    liveRows[slot] = row;
   }
-  liveRow.firstChild.textContent = new Date().toTimeString().slice(0, 8) + '  ';
-  liveRow.lastChild.textContent = text;
+  row.firstChild.textContent = new Date().toTimeString().slice(0, 8) + '  ';
+  row.lastChild.textContent = text;
+  const other = slot === 'progress' ? liveRows.file : liveRows.progress;
+  if (other && other.isConnected && other.parentNode === term) {
+    if (slot === 'progress') term.insertBefore(row, other);
+    else term.insertBefore(row, other.nextSibling);
+  } else if (!row.isConnected) {
+    term.appendChild(row);
+  }
   while (term.children.length > TERM_MAX_LINES) term.removeChild(term.firstChild);
   term.scrollTop = term.scrollHeight;
 }
 function clearLog() {
   logQueue = [];
-  liveRow = null;
+  liveRows = { progress: null, file: null };
   if (logRaf) { cancelAnimationFrame(logRaf); logRaf = 0; }
   const term = $('term');
   if (term) term.innerHTML = '';
@@ -864,7 +880,7 @@ function attachJob(jobId, udid, startedAt, kind) {
       logCount++;
       queueLog(d.line);
     } else if (d.type === 'live') {
-      renderLive(d.text);           // 末行原地刷新，不占日志行数
+      renderLive(d.text, d.slot || 'file');   // 两行常驻，各自原地刷新
     } else if (d.type === 'progress') {
       const p = Math.max(0, Math.min(100, d.progress || 0));
       if ($('prPct').textContent !== p + '%') {   // 值没变就不碰 DOM
@@ -1245,13 +1261,45 @@ function toggleSwitch(el) {
   syncTimeBox();
   saveSettings();
 }
+/* 频率 / 星期 / 日期两种自动备份共用，任一开关开着就能改；备份时间只给定时备份用。
+   星期 / 日期两行按频率显示 */
 function syncTimeBox() {
-  $('timeBox').classList.toggle('off', !$('swSched').classList.contains('on'));
+  const sched = $('swSched').classList.contains('on');
+  const plan = sched || $('swUsb').classList.contains('on');
+  document.querySelectorAll('.sched-dim').forEach(x => x.classList.toggle('off', !plan));
+  $('timeBox').classList.toggle('off', !sched);
+  const freq = document.querySelector('#schedFreq span.on')?.dataset.v || 'daily';
+  $('wdRow').style.display = freq === 'weekly' ? '' : 'none';
+  $('mdRow').style.display = freq === 'monthly' ? '' : 'none';
+}
+const WD_CN = '一二三四五六日';
+/* 任务历史卡片右上角：两种自动备份一起说清楚，只开插线时别写成「已关闭」 */
+function schedLabel(s) {
+  const on = v => v === 'true' || v === '1';
+  const sched = on(s.schedule_enabled), usb = on(s.usb_autobackup);
+  if (!sched && !usb) return '自动备份：已关闭';
+  let days = '每天';
+  if (s.schedule_freq === 'weekly') {
+    days = '每周' + String(s.schedule_weekdays || '').split(',').filter(Boolean)
+      .map(d => WD_CN[+d - 1]).join('、');
+  } else if (s.schedule_freq === 'monthly') {
+    days = '每月 ' + (s.schedule_monthday || 1) + ' 日';
+  }
+  const parts = [];
+  if (sched) parts.push('定时：' + days + ' ' + (s.schedule_time || '21:00'));
+  if (usb) parts.push('插线：' + (sched ? '开' : days));
+  if (!sched) parts.push('定时：关');
+  return parts.join(' · ');
 }
 async function saveSettings() {
   const payload = {
     schedule_enabled: $('swSched').classList.contains('on') ? 'true' : 'false',
-    schedule_time: $('timeInput').value || '03:00',
+    schedule_time: $('timeInput').value || '21:00',
+    schedule_freq: document.querySelector('#schedFreq span.on')?.dataset.v || 'daily',
+    schedule_weekdays: [...document.querySelectorAll('#schedWeekdays span.on')]
+      .map(x => x.dataset.v).join(',') || '6',
+    schedule_monthday: $('mdInput').value || '1',
+    usb_autobackup: $('swUsb').classList.contains('on') ? 'true' : 'false',
     notify_webhook: $('whInput').value.trim(),
     notify_scope: document.querySelector('#notifyScope span.on')?.dataset.v || 'all',
     log_verbose: document.querySelector('#logMode span.on')?.dataset.v || 'false'
@@ -1260,23 +1308,29 @@ async function saveSettings() {
     await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     toast('设置已保存');
     state.settings = payload;
-    $('schedBadge').textContent = payload.schedule_enabled === 'true' ? '定时：每天 ' + payload.schedule_time : '定时：已关闭';
+    $('schedBadge').textContent = schedLabel(payload);
   } catch (e) { toast('保存失败：' + e.message); }
 }
 function renderSettings() {
   const s = state.settings || {};
   const on = s.schedule_enabled === 'true' || s.schedule_enabled === '1';
-  const time = s.schedule_time || '03:00';
+  const time = s.schedule_time || '21:00';
   $('swSched').classList.toggle('on', on);
+  $('swUsb').classList.toggle('on', s.usb_autobackup === 'true' || s.usb_autobackup === '1');
+  const freq = ['daily', 'weekly', 'monthly'].includes(s.schedule_freq) ? s.schedule_freq : 'daily';
+  document.querySelectorAll('#schedFreq span').forEach(x => x.classList.toggle('on', x.dataset.v === freq));
+  const wds = String(s.schedule_weekdays || '6').split(',');
+  document.querySelectorAll('#schedWeekdays span').forEach(x => x.classList.toggle('on', wds.includes(x.dataset.v)));
   syncTimeBox();
   /* 每 6 秒的轮询刷新不要打断用户正在进行的输入 */
   if (document.activeElement !== $('timeInput')) $('timeInput').value = time;
+  if (document.activeElement !== $('mdInput')) $('mdInput').value = String(s.schedule_monthday || '1');
   if (s.notify_webhook && document.activeElement !== $('whInput')) $('whInput').value = s.notify_webhook;
   const scope = s.notify_scope === 'failure' ? 'failure' : 'all';
   document.querySelectorAll('#notifyScope span').forEach(x => x.classList.toggle('on', x.dataset.v === scope));
   const lv = s.log_verbose === 'true' ? 'true' : 'false';
   document.querySelectorAll('#logMode span').forEach(x => x.classList.toggle('on', x.dataset.v === lv));
-  $('schedBadge').textContent = on ? '定时：每天 ' + time : '定时：已关闭';
+  $('schedBadge').textContent = schedLabel(s);
   /* 安全卡片：已启用显示会话与退出入口；未启用给出启用方法 */
   const auth = !!(state.status && state.status.auth);
   const authRow = $('authRow'), authHint = $('authHintRow');
@@ -1302,6 +1356,29 @@ async function testWebhook(btn) {
 }
 function wireSettings() {
   $('timeInput').addEventListener('change', saveSettings);
+  /* 每月几号：1–31，小月由后端落到月底 */
+  $('mdInput').innerHTML = Array.from({ length: 31 }, (_, i) =>
+    '<option value="' + (i + 1) + '">' + (i + 1) + ' 日</option>').join('');
+  $('mdInput').addEventListener('change', saveSettings);
+  document.querySelectorAll('#schedFreq span').forEach(sp => {
+    sp.onclick = () => {
+      document.querySelectorAll('#schedFreq span').forEach(x => x.classList.remove('on'));
+      sp.classList.add('on');
+      syncTimeBox();
+      saveSettings();
+    };
+  });
+  /* 星期可多选，但至少留一天：全取消就等于没有计划，后端也会拒绝 */
+  document.querySelectorAll('#schedWeekdays span').forEach(sp => {
+    sp.onclick = () => {
+      if (sp.classList.contains('on') && document.querySelectorAll('#schedWeekdays span.on').length === 1) {
+        toast('每周至少选一天');
+        return;
+      }
+      sp.classList.toggle('on');
+      saveSettings();
+    };
+  });
   $('whInput').addEventListener('change', saveSettings);
   document.querySelectorAll('#notifyScope span').forEach(sp => {
     sp.onclick = () => {
