@@ -86,6 +86,7 @@ NET_ALIVE_TTL = 60
 NET_RETRY_MIN = 30
 NET_RETRY_MAX = 120
 _net_probe: dict[str, dict] = {}   # udid -> {"ok", "at", "fails"}
+_net_listed: set[str] = set()      # 上一轮 idevice_id -n 列出来的（未必探活通过）
 
 
 def _net_need_probe(udid: str, now: float) -> bool:
@@ -122,6 +123,8 @@ async def scan_devices(include_net: bool = True, probe: str | None = None) -> li
     code, out = await _run([config.BIN_IDEVICE_ID, "-n"])
     cands = [ln.strip() for ln in out.splitlines() if ln.strip()] if code == 0 else []
     cands = [u for u in cands if u not in usb]
+    _net_listed.clear()
+    _net_listed.update(cands)
 
     # 从列表消失或改插 USB 的，缓存作废。之后它再出现时没有缓存，会被立刻探活——
     # 「手机回到局域网马上显示在线」靠的就是这一步
@@ -142,6 +145,13 @@ async def scan_devices(include_net: bool = True, probe: str | None = None) -> li
     result += [{"udid": u, "connection": TRANSPORT_NET}
                for u in cands if _net_probe.get(u, {}).get("ok")]
     return result
+
+
+def net_offline_reason(udid: str) -> str:
+    """无线设备为什么算离线：给任务日志用，区分是网络上找不到了还是连不上。"""
+    if udid in _net_listed:
+        return "Wi-Fi 列表里还在，但探活没通过"
+    return "Wi-Fi 列表里找不到了"
 
 
 async def _net_alive(udid: str, timeout: float = 5.0) -> bool:

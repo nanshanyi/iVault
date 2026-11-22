@@ -752,12 +752,15 @@ td b{color:var(--txt);font-weight:600}
 <section class="view" id="view-tasks">
   <div class="page-head">
     <div><h2>备份任务</h2><p>进度由 NAS 后端实时推送，关闭页面不影响任务执行</p></div>
-    <button class="btn primary" onclick="startBackup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14m-6-6l6 6-6 6"/></svg>开始备份</button>
+    <button class="btn primary" id="taskStartBtn" onclick="startBackup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14m-6-6l6 6-6 6"/></svg>开始备份</button>
   </div>
   <div class="card" id="liveJob" style="display:none;margin-bottom:18px;border-color:rgba(0,196,127,.3)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
       <b style="font-size:14.5px" id="jobTitle">正在备份 · …</b>
-      <button class="btn danger" id="jobActBtn" onclick="cancelJob()">取消</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn primary" id="jobRetryBtn" style="display:none">重试</button>
+        <button class="btn danger" id="jobActBtn" onclick="cancelJob()">取消</button>
+      </div>
     </div>
     <div id="jobErr" style="display:none;margin:-6px 0 16px;padding:11px 13px;border-radius:10px;
          background:rgba(255,93,108,.09);border:1px solid rgba(255,93,108,.28);

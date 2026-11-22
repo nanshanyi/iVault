@@ -55,6 +55,12 @@ NOISE_RE = re.compile(r"^(Status|Receiving|Sending)\b")
 # 但只认大写 ERROR/FATAL：设备端报错一直是这个写法，而小写 error 会命中文件名
 # （App 里 `.../js/error.1984885a.js` 极常见），那样每条 Receiving 都会被提成
 # 「错误」直接落日志，噪声过滤等于白做。
+# 小写的 failed / abort 这些词同理不用在文件行（Receiving/Sending 开头）上：
+# `.../images/failed@2x.png`、`bind-failure-status.png` 这种文件名真机一次备份
+# 就命中十几条。文件行只认 GLUED_ERR_RE。报错粘在进度行后面时从 ERROR: 处切开，
+# 前面的进度文字不要。Status 行是工具的状态文字，不含文件名，照常用 ERROR_RE
+# （`Status  Abort requested, hold on...` 要留着）
+GLUED_ERR_RE = re.compile(r"(?:ERROR|FATAL):")
 ERROR_RE = re.compile(r"\b(?:ERROR|FATAL)\b|(?i:\b(?:failed|failure|abort\w*|cannot|could not|refused|denied|invalid)\b)")
 # 终端控制序列（清屏、光标上移等）：落库和前端都不该看到这些乱码
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
@@ -102,6 +108,79 @@ WAIT_TIMEOUT_PREFIX = "等待手机超时"
 STALL_TIMEOUT = 30 * 60
 STALL_PREFIX = "传输中断"
 
+# 报错前多久还在收发数据算「突然断开」；超过这个就是「先卡住、后断开」
+SUDDEN_GAP = 60
+
+# ---------- 错误码翻译 ----------
+# 码值取自 Dockerfile 锁定的 libimobiledevice（LIBIMD_REF）：
+#   include/libimobiledevice/mobilebackup2.h 的 mobilebackup2_error_t
+#   include/libimobiledevice/lockdown.h 的 lockdownd_error_t
+# idevicebackup2 打印的是这些枚举的原始数值，退出码 255 只是 -1 的低 8 位，本身不带信息，
+# 真正的原因在输出里。升级 libimobiledevice 后要对一下这两张表。
+_LINK_LOST = "和手机的连接断了"
+MB2_ERRORS = {
+    -1: "参数错误（工具内部问题）",
+    -2: "手机发来的数据无法解析",
+    -3: _LINK_LOST + "（底层连接中断）",
+    -4: _LINK_LOST + "（加密通道中断）",
+    -5: "手机长时间没有响应",
+    -6: "手机的备份协议版本不支持",
+    -7: "手机拒绝了这一步操作",
+    -8: "工具和手机没有共同支持的协议版本",
+    -256: "和手机通信时出现未知错误",
+}
+LOCKDOWN_ERRORS = {
+    -4: "配对失败，需要重新插线配对",
+    -5: "和手机建立加密连接失败，配对记录可能失效了，需要重新插线配对",
+    -7: "手机没有响应，请点亮屏幕、解锁后再试",
+    -8: _LINK_LOST,
+    -17: "手机锁着，请解锁 iPhone 后再试",
+    -18: "手机上点了「不信任」，需要拔插数据线重新配对",
+    -19: "手机在等你点「信任」",
+    -20: "配对记录缺失，需要重新插线配对",
+    -21: "手机不认这台 NAS 的配对记录（可能在手机上「还原位置与隐私」或抹掉过），需要重新插线配对",
+    -29: "配对记录缺失，需要重新插线配对",
+    -31: "配对记录无效，需要重新插线配对",
+    -35: "手机重启后还没解锁过，请先解锁一次再试",
+}
+# (匹配规则, 文案或按匹配结果生成文案的函数)
+_ERROR_RULES = [
+    (re.compile(r"Could not receive from mobilebackup2 \((-?\d+)\)"),
+     lambda m: MB2_ERRORS.get(int(m.group(1)), f"和手机通信出错（错误码 {m.group(1)}）")),
+    (re.compile(r"Could not connect to lockdownd, error code (-?\d+)"),
+     lambda m: LOCKDOWN_ERRORS.get(int(m.group(1)), f"连不上手机的管理服务（lockdownd 错误码 {m.group(1)}）")),
+    (re.compile(r"^ErrorCode (\d+): (.+)$", re.M),
+     lambda m: f"手机报错 {m.group(1)}：{m.group(2).strip()}"),
+    (re.compile(r"No device found"),
+     "找不到这台手机：不在同一 Wi-Fi、已休眠，或数据线没插好"),
+    (re.compile(r"Could not start service \S+: (.+)$", re.M),
+     lambda m: f"手机没有启动备份服务（{m.group(1).strip()}），请解锁 iPhone 后再试"),
+    (re.compile(r"device refused to start the (?:backup|restore) process"),
+     "手机拒绝开始，请解锁 iPhone 后再试"),
+    (re.compile(r"protocol version mismatch|Could not perform backup protocol version exchange"),
+     "工具和这台 iPhone 的备份协议对不上，可能是 iOS 太新，需要更新 iVault"),
+    (re.compile(r"could not lock file|timeout while locking for sync"),
+     "手机正被别的程序同步（Finder、爱思助手等），请先关掉它们"),
+    (re.compile(r"Error opening '[^']*' for writing: (.+)$", re.M),
+     lambda m: f"写入备份盘失败（{m.group(1).strip()}），请检查备份盘空间和目录权限"),
+    (re.compile(r"Backup directory \"[^\"]*\" does not exist"),
+     "备份目录不存在，请检查 BACKUP_LOCATION 的挂载"),
+]
+
+
+def explain_failure(tail: str) -> str:
+    """从工具输出里找出能看懂的失败原因；认不出返回空串。
+
+    取最后一条命中的：前面的报错可能已被工具自己重试掉，最后那条才是收尾的原因。
+    """
+    best: tuple[int, str] | None = None
+    for pat, out in _ERROR_RULES:
+        for m in pat.finditer(tail):
+            text = out(m) if callable(out) else out
+            if best is None or m.start() >= best[0]:
+                best = (m.start(), text)
+    return best[1] if best else ""
+
 
 def _fmt_size(n: int) -> str:
     """字节数转人读单位（日志里一位小数足够）。"""
@@ -112,6 +191,23 @@ def _fmt_size(n: int) -> str:
         if n < 1024:
             return f"{n:.1f} {unit}"
     return f"{n / 1024:.1f} TB"
+
+
+def _fmt_duration(sec: int) -> str:
+    if sec < 60:
+        return f"{sec} 秒"
+    if sec < 3600:
+        return f"{sec // 60} 分钟"
+    return f"{sec // 3600} 小时 {sec % 3600 // 60} 分钟"
+
+
+def _batt_text(b: dict | None, with_age: bool = False) -> str:
+    """电量读数转一句话：`电量 48%（未充电）`；没读到返回空串。"""
+    if not b:
+        return ""
+    chg = "充电中" if b["charging"] else "接着电源" if b["external"] else "未充电"
+    age = int((time.time() - b["at"]) // 60) if with_age else 0
+    return f"电量 {b['level']}%（{chg}" + (f"，读数 {age} 分钟前" if age >= 1 else "") + "）"
 # 心跳：精简档不再记录文件级噪声，长时间没有任何输出时补一条，
 # 用来区分「慢慢跑」和「彻底卡死」。
 HEARTBEAT_INTERVAL = 300
@@ -195,6 +291,10 @@ class Job:
         self._kill_note = ""                  # 进程是怎么结束的：SIGTERM / 强制结束
         self.backup_type = ""                 # FULL / INCREMENTAL，由 _run_backup 决定
         self._verbose_cache: bool | None = None   # 日志详细度（设置项，懒加载）
+        self._via_wifi = False                # 开跑时走的是不是无线（失败原因据此给建议）
+        self._last_data_ts = 0.0              # 最后一次真正收发数据的时间
+        self._first_err_ts = 0.0              # 最后一次收发数据之后第一条报错的时间
+        self._offline_at: float | None = None  # 任务进行中设备从列表里消失的时间
 
     # ----- 事件广播 -----
 
@@ -284,19 +384,81 @@ class Job:
 
     def _env_text(self) -> str:
         """开跑时的环境：走什么通道、电量、备份盘剩余。失败时最先要排除的就是这几样。"""
-        conn = "Wi-Fi" if device.get_transport(self.udid) == device.TRANSPORT_NET else "USB"
-        b = device.battery_cached(self.udid)
-        if b:
-            chg = "充电中" if b["charging"] else "接着电源" if b["external"] else "未充电"
-            # 读数可能是缓存的（定时备份复用未过期读数，无线最长 10 分钟），
-            # 不写时间的话事后会把它当成开跑那一刻的电量
-            age = int((time.time() - b["at"]) // 60)
-            batt = f"电量 {b['level']}%（{chg}" + (f"，读数 {age} 分钟前" if age >= 1 else "") + "）"
-        else:
-            batt = "电量未知"
+        conn = "Wi-Fi" if self._via_wifi else "USB"
+        # 读数可能是缓存的（定时备份复用未过期读数，无线最长 10 分钟），
+        # 不写时间的话事后会把它当成开跑那一刻的电量
+        batt = _batt_text(device.battery_cached(self.udid), with_age=True) or "电量未知"
         free = _disk_free_bytes(config.BACKUP_DIR)
         disk = f"备份盘剩余 {_fmt_size(free)}" if free >= 0 else "备份盘剩余未知"
         return f"{conn} · {batt} · {disk}"
+
+    def _start_hint(self) -> str:
+        """开跑时的风险提示：无线 + 完整备份 / 没接电源。
+
+        真机上 Wi-Fi、未充电的首次完整备份传到第 94 分钟断开（加密通道报 -4）。
+        完整备份几十 GB 要几个小时，这时候提醒插线比失败后再说有用
+        """
+        if self.kind != "BACKUP" or not self._via_wifi:
+            return ""
+        why = []
+        if self.backup_type == "FULL":
+            why.append("这是完整备份，数据量大、耗时长")
+        b = device.battery_cached(self.udid)
+        if b and not (b["charging"] or b["external"]):
+            why.append("手机没接电源")
+        if not why:
+            return ""
+        return "提示：" + "，".join(why) + "。Wi-Fi 下长时间传输容易中途断开，建议插数据线、接上电源"
+
+    def note_transport(self, before: str | None, after: str | None, why: str = ""):
+        """任务进行中设备连接状态变了：写进任务日志。
+
+        容器日志对短暂掉线有 120 秒宽限（锁屏手机一夜要掉几十次），但任务进行中
+        每一次都要留下：事后要靠它判断传输断开时手机是不是先从网络上消失了。
+        「列表里看不到」不等于传输断了，备份走的那条连接可能还活着
+        """
+        label = {device.TRANSPORT_USB: "USB", device.TRANSPORT_NET: "Wi-Fi"}
+        now = time.time()
+        if after is None:
+            self._offline_at = now
+            self.add_log(f"连接状态：{label.get(before, before)} → 离线"
+                         + (f"（{why}）" if why else "") + "，正在进行的传输不一定受影响")
+        elif before is None:
+            gone = f"（离开 {int(now - self._offline_at)} 秒）" if self._offline_at else ""
+            self._offline_at = None
+            self.add_log(f"连接状态：离线 → {label.get(after, after)}{gone}")
+        else:
+            self.add_log(f"连接状态：{label.get(before, before)} → {label.get(after, after)}")
+
+    def _failure_reason(self, rc: int) -> str:
+        """失败原因：把工具输出里的报错翻成能看懂的话，再按连接方式给一句建议。"""
+        why = explain_failure("\n".join(self.log_tail[-60:]))
+        if not why:
+            return f"{os.path.basename(config.BIN_IDEVICEBACKUP2)} 退出码 {rc}，没能识别具体原因，请查看本条任务日志"
+        if why.startswith(_LINK_LOST):
+            why += ("。Wi-Fi 下长时间传输容易断，建议插数据线、接上电源后重试" if self._via_wifi
+                    else "。检查数据线是否松动，或换一个 USB 口再试")
+        return why
+
+    async def _log_end_state(self):
+        """失败收尾前留两条线索：断开前还有没有数据在走、结束时的电量。
+
+        电量现查一次（无线下读不到本身也是线索）。传输过程中不定时去读：
+        无线下每读一次都要另开一条到手机的连接，可能干扰正在传的备份
+        """
+        if self._last_data_ts:
+            ref = self._first_err_ts or time.time()
+            gap = max(0, int(ref - self._last_data_ts))
+            verb = "发" if self.kind == "RESTORE" else "收"
+            if gap < SUDDEN_GAP:
+                self.add_log(f"出错前 {gap} 秒还在{verb}数据：是突然断开的，不是先卡住")
+            else:
+                self.add_log(f"出错前已有 {_fmt_duration(gap)}没有{verb}到数据：先卡住，后断开")
+        try:
+            b = await device.battery_refresh(self.udid)
+        except Exception:  # noqa: BLE001
+            b = None
+        self.add_log("结束时" + (_batt_text(b) or "电量读不到（手机可能已断开）"))
 
     def _elapsed_text(self) -> str:
         sec = max(0, int(time.time() - (self.started_at or time.time())))
@@ -381,8 +543,19 @@ class Job:
                     log.warning("任务 %s 等密码提醒发送失败：%s", self.tag(), e)
             return
 
-        # 报错/告警优先：不节流、不判噪声，原样留下
-        if ERROR_RE.search(line):
+        # 报错/告警优先：不节流、不判噪声，原样留下（文件行的规则见 GLUED_ERR_RE）
+        g = GLUED_ERR_RE.search(line) if NOISE_RE.search(line) else None
+        if g and g.start() > 0:
+            line = line[g.start():]
+            is_err = True
+        elif line.startswith(("Receiving", "Sending")):
+            is_err = g is not None
+        else:
+            is_err = bool(ERROR_RE.search(line))
+        if is_err:
+            # 记「最后一次收发数据之后的第一条报错」：中途有过报错、之后又接着传的，不算
+            if self._transfer_started and self._first_err_ts <= self._last_data_ts:
+                self._first_err_ts = now
             self.add_log(line)
             return
 
@@ -409,6 +582,7 @@ class Job:
                 # 数据其实还没开始传
                 if pct > 0:
                     self._mark_transfer_started()
+                    self._last_data_ts = now
                 if now - self._last_prog_ts >= PROGRESS_MIN_INTERVAL:
                     self._last_prog_ts = now
                     self.broadcast({"type": "progress", "progress": self.progress,
@@ -447,6 +621,7 @@ class Job:
                 main_dir = "Sending" if self.kind == "RESTORE" else "Receiving"
                 if line.startswith(main_dir):
                     self._mark_transfer_started()
+                    self._last_data_ts = now
                 self._live(act)
             if self._verbose() and now - self._last_noise_ts >= NOISE_LOG_INTERVAL:
                 self._last_noise_ts = now
@@ -489,7 +664,9 @@ class Job:
                     self.add_log(f"已等 {waited} 分钟仍是 0%：密码输完后手机要生成清单、比对变更，"
                                  "这段时间没有任何输出是正常的；若手机屏幕还停在输密码那一步，"
                                  "请再输一次（手机锁屏后可能需要重新解锁）")
-                if not switched and idle >= HEARTBEAT_WAITING:
+                # 密码提示还挂着（前 90 秒）时不报心跳：到点那条改口提示本身就是心跳，
+                # 否则前后 30 秒会出两条「已等 1 分钟」
+                if not switched and idle >= HEARTBEAT_WAITING and self.phase != PHASE_PASSCODE:
                     if self._passcode_seen:
                         self.add_log(f"仍在等待手机开始传输，已等 {waited} 分钟"
                                      "（手机在准备数据，进度停在 0% 是正常的）")
@@ -683,9 +860,13 @@ class Job:
 
         无论循环是正常结束还是抛异常，finally 都会保证进程不留在后台。
         """
+        self._via_wifi = device.get_transport(self.udid) == device.TRANSPORT_NET
         header, env = self._header_text(), self._env_text()
         self.add_log(header)
         self.add_log(env)
+        hint = self._start_hint()
+        if hint:
+            self.add_log(hint)
         self.add_log(f"$ {' '.join(args)}")
         log.info("任务开始 %s · %s · %s", self.tag(), header, env)
         if self._cancel_requested:
@@ -812,7 +993,8 @@ class Job:
             self._close_backup("COMPLETE", size_bytes=size, backup_type=backup_type)
             self._finish("DONE", progress=100, size=size, backup_id=self.backup_id)
         else:
-            err = self._timeout_err or f"idevicebackup2 退出码 {rc}"
+            err = self._timeout_err or self._failure_reason(rc)
+            await self._log_end_state()
             self._close_backup("FAILED", error=err)
             self._finish("FAILED", error=err)
 
@@ -1044,13 +1226,15 @@ async def _run_restore_inner(job: "Job"):
         job._close_backup("COMPLETE")
         job._finish("DONE", progress=100)
     else:
-        err = job._timeout_err or _restore_error(rc, "\n".join(job.log_tail[-40:]),
-                                                 password_provided=bool(job._env))
+        err = job._timeout_err or _restore_error(rc, "\n".join(job.log_tail[-60:]),
+                                                 password_provided=bool(job._env),
+                                                 via_wifi=job._via_wifi)
+        await job._log_end_state()
         job._close_backup("FAILED", error=err)
         job._finish("FAILED", error=err)
 
 
-def _restore_error(rc: int, tail: str, password_provided: bool) -> str:
+def _restore_error(rc: int, tail: str, password_provided: bool, via_wifi: bool = False) -> str:
     """把恢复失败的退出码和输出尾部翻译成一句能照着做的话。
 
     「查找」与密码错误两类提示都是尽力识别：设备端返回的具体错误码还没在
@@ -1058,15 +1242,21 @@ def _restore_error(rc: int, tail: str, password_provided: bool) -> str:
     MBErrorDomain 前缀但该域覆盖所有备份错误）。真机实测拿到日志后再收紧。
     """
     if re.search(r"password is required", tail, re.I):
-        return f"restore 退出码 {rc}：这份备份已加密，需要输入备份密码"
+        return "这份备份已加密，需要输入备份密码"
     hints = []
+    why = explain_failure(tail)
+    if why:
+        if why.startswith(_LINK_LOST):
+            why += "。恢复建议插数据线进行" if via_wifi else "。检查数据线是否松动"
+        hints.append(why)
     if re.search(r"find\s*my|查找", tail, re.I):
         hints.append("检测到「查找我的 iPhone」相关报错，请先在手机上关闭「查找」"
                      "（设置 → Apple 账户 → 查找），恢复完成后再打开")
     elif re.search(r"MBErrorDomain", tail):
         hints.append("设备端返回了备份域错误（MBErrorDomain），常见原因是未关闭「查找我的 iPhone」")
-    if password_provided:
+    # 连接断了就是断了，不必再让人去怀疑密码
+    if password_provided and not why.startswith(_LINK_LOST):
         hints.append("这份备份已加密，密码不正确也会导致恢复失败，请核对")
     if not hints:
-        return f"restore 退出码 {rc}，可查看本条任务日志中的完整设备报错"
-    return f"restore 退出码 {rc}：" + "；".join(hints)
+        return f"idevicebackup2 退出码 {rc}，没能识别具体原因，请查看本条任务日志"
+    return "；".join(hints)

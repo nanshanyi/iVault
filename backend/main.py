@@ -392,6 +392,11 @@ async def _refresh_transports(probe: str | None = None) -> None:
         if a == b:
             continue
         device.battery_forget(udid)
+        # 任务进行中的每次变化都进任务日志，不受下面 OFFLINE_LOG_GRACE 的限制
+        job = jobs.busy_job(udid)
+        if job is not None and job.udid == udid:   # 换机恢复的来源设备在不在线无所谓
+            why = device.net_offline_reason(udid) if b is None and a == device.TRANSPORT_NET else ""
+            job.note_transport(a, b, why)
         # 进程首扫时 old 是空字典，a 为 None 只是「还没有记录」，不是刚离线。
         # 不拦的话每次重启都会为每台在线设备刷一条「离线 → Wi-Fi」
         if a is None and _first_scan:
@@ -696,6 +701,10 @@ async def trigger_backup(body: dict):
     udid = body.get("udid")
     if not udid:
         raise HTTPException(400, "缺少 udid")
+    # 先看忙不忙：下面现场探活要将近 1 秒，任务进行中再点一次没必要等它
+    busy = jobs.busy_job(udid)
+    if busy is not None:
+        raise HTTPException(409, str(jobs.DeviceBusy(busy, udid)))
     # 触发前再刷一次：既校验在线状态，也确保连接方式（USB / 无线）是最新的，
     # 否则可能用错误通道去连设备
     try:

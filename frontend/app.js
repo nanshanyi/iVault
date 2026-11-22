@@ -891,6 +891,7 @@ function attachJob(jobId, udid, startedAt, kind) {
   resetLiveJob();                      // 清掉上一轮留下的终态（失败原因等）
   currentJob = { id: jobId, udid: udid, kind: kind || 'BACKUP' };
   liveJobState = 'running';
+  setTaskStart(false);
   $('liveJob').style.display = 'block';
   $('navJobBadge').textContent = '1';
   $('navJobBadge').style.display = 'block';
@@ -985,6 +986,7 @@ function detachJob() {
    失败 → 保留卡片把原因写清楚，按钮变「关闭」。 */
 function finishJob(kind, msg, error) {
   const udid = currentJob && currentJob.udid;
+  const jobKind = currentJob && currentJob.kind;
   detachJob();
   liveJobState = kind;
   const arc = $('prArc');
@@ -1018,7 +1020,22 @@ function finishJob(kind, msg, error) {
   btn.textContent = '关闭';
   btn.className = 'btn';
   btn.onclick = hideLiveJob;
+  setTaskStart(true);
+  /* 失败了多半要马上再来一次：就地给重试，不用回设备页找按钮。
+     恢复不给：要重新选来源、输密码，还会覆盖整机数据，得走一遍确认 */
+  if (jobKind === 'BACKUP' && udid) {
+    const retry = $('jobRetryBtn');
+    retry.style.display = '';
+    retry.onclick = () => { hideLiveJob(); startBackup(udid); };
+  }
   refresh();
+}
+/* 任务页顶部的「开始备份」：任务进行中再点只会撞上「设备忙」 */
+function setTaskStart(on) {
+  const b = $('taskStartBtn');
+  if (!b) return;
+  b.disabled = !on;
+  b.title = on ? '' : '已有任务在进行，结束后再开始';
 }
 /* 收起任务卡并复位，下一轮任务会重新走 resetLiveJob() */
 function hideLiveJob() {
@@ -1031,6 +1048,9 @@ function resetLiveJob() {
   if (box) { box.style.display = 'none'; box.textContent = ''; }
   const btn = $('jobActBtn');
   if (btn) { btn.textContent = '取消'; btn.className = 'btn danger'; btn.onclick = cancelJob; }
+  const retry = $('jobRetryBtn');
+  if (retry) { retry.style.display = 'none'; retry.onclick = null; }
+  setTaskStart(true);
   const arc = $('prArc');
   if (arc) arc.style.opacity = '';
   $('liveJob').classList.remove('failed');
