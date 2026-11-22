@@ -36,8 +36,8 @@
   <!-- 跟随 GitHub 的深浅色自动切图（<picture> + prefers-color-scheme）。
        两个主题各一份文件；?v= 破除 camo 缓存，换图后把数字加一即可 -->
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dashboard-dark.jpg?v=1">
-    <img src="assets/screenshots/dashboard-light.jpg?v=1" width="900" alt="iVault 总览：设备状态、备份进度与最近动态">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dashboard-dark.jpg?v=2">
+    <img src="assets/screenshots/dashboard-light.jpg?v=2" width="900" alt="iVault 总览：设备状态、备份进度与最近动态">
   </picture>
 </p>
 
@@ -77,14 +77,14 @@
   <tr>
     <td width="50%">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/devices-dark.jpg?v=1">
-        <img src="assets/screenshots/devices-light.jpg?v=1" alt="设备管理">
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/devices-dark.jpg?v=2">
+        <img src="assets/screenshots/devices-light.jpg?v=2" alt="设备管理">
       </picture>
     </td>
     <td width="50%">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/task-dark.jpg?v=1">
-        <img src="assets/screenshots/task-light.jpg?v=1" alt="备份任务">
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/task-dark.jpg?v=2">
+        <img src="assets/screenshots/task-light.jpg?v=2" alt="备份任务">
       </picture>
     </td>
   </tr>
@@ -95,14 +95,14 @@
   <tr>
     <td width="50%">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-dark.jpg?v=1">
-        <img src="assets/screenshots/settings-light.jpg?v=1" alt="设置">
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-dark.jpg?v=2">
+        <img src="assets/screenshots/settings-light.jpg?v=2" alt="设置">
       </picture>
     </td>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/mobile-dark.jpg?v=1">
-        <img src="assets/screenshots/mobile-light.jpg?v=1" width="290" alt="手机端">
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/mobile-dark.jpg?v=2">
+        <img src="assets/screenshots/mobile-light.jpg?v=2" width="290" alt="手机端">
       </picture>
     </td>
   </tr>
