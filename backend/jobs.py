@@ -113,13 +113,14 @@ SUDDEN_GAP = 60
 
 # 取消时给工具留多久自己退出（之后才 SIGKILL）。
 # idevicebackup2 收到 SIGTERM 只是把 quit_flag 加一，要等手上那次接收返回才会检查它。
-# 传输中消息不断，1 秒内就退出（真机 BKP-0010）；还没开始传时（等密码、握手、手机准备），
-# 它卡在一次 30 秒的接收里（property_list_service_receive_plist 写死 30000 ms），
-# poll 被信号打断后会接着等完。以前一律 5 秒就强杀，工具来不及释放同步锁、发同步结束通知、
-# 给备份服务发 DLMessageDisconnect——真机上每次这样强杀之后，手机端备份服务都有几分钟
+# 传数据时每收一块就检查一次，1 秒内就退出（真机 BKP-0010）；卡在等消息时（等密码、握手、
+# 手机准备，传输中两个数据域之间也可能），那次接收写死 30 秒超时，而 glue 的 poll 被信号
+# 打断后会用完整的 30 秒重新等，所以最坏要整 30 秒才轮到检查。之后还要收尾：解同步锁、
+# 新开一条 lockdown 连接发 syncDidFinish、最后给备份服务发 DLMessageDisconnect，Wi-Fi 下
+# 这一步要几秒。45 秒是上限，工具一退出就不再等。
+# 以前一律 5 秒就强杀，收尾全被跳过——真机上每次这样强杀之后，手机端备份服务都有几分钟
 # 不理新连接（握手 30 秒超时报 -1，0006→0007/0008、0011→0013/14/15）
-CANCEL_GRACE_TRANSFER = 5
-CANCEL_GRACE_WAITING = 35
+CANCEL_GRACE = 45
 # 强杀之后多久内的 -1 归因到「上次被强制结束」（真机恢复要 3 分半到 7 分钟）
 KILL_AFTERMATH = 10 * 60
 _last_kill: dict[str, float] = {}   # udid -> 最近一次 SIGKILL 的时间
@@ -831,7 +832,7 @@ class Job:
         """等手机超时：记原因，结束进程。任务按失败收尾（不是取消：没人点取消）。
 
         结束进程放到独立任务里：心跳任务会在 _pump 收尾时被取消，在这里 await
-        的话强杀可能做到一半就断了。实测等密码阶段工具不理 SIGTERM，要等 5 秒后强杀。
+        的话强杀可能做到一半就断了。等密码阶段工具最长要 30 多秒才响应 SIGTERM（见 CANCEL_GRACE）。
         """
         minutes = self.wait_timeout // 60
         reason = "，可能没有在 iPhone 上输入锁屏密码" if self._passcode_seen else ""
@@ -857,7 +858,7 @@ class Job:
     def _spawn_kill(self) -> asyncio.Task:
         """在后台结束子进程，不等它。
 
-        强杀要 SIGTERM 后等 5 秒，调用方（心跳、取消接口）不该跟着等。done_callback
+        SIGTERM 后最多要等 CANCEL_GRACE 秒，调用方（心跳、取消接口）不该跟着等。done_callback
         负责把异常取出来记日志，不然 _kill_proc 万一抛错会变成 Task exception was
         never retrieved。_pump 的 finally 还会再调一次 _kill_proc 兜底，并且会等进程真正退出
         """
@@ -951,8 +952,11 @@ class Job:
             log.warning("任务 %s webhook 通知失败：%s", self.id, e)
 
     def _cancel_grace(self) -> float:
-        """SIGTERM 之后等多久再强杀：按工具此刻卡在哪一步（见 CANCEL_GRACE_*）。"""
-        return CANCEL_GRACE_TRANSFER if self._transfer_started else CANCEL_GRACE_WAITING
+        """SIGTERM 之后最多等多久再强杀（见 CANCEL_GRACE）。
+
+        不按阶段区分：传输中工具也可能正卡在一次 30 秒的接收里，短了照样会被强杀；
+        正在收数据时它 1 秒内就自己退出，不会真等这么久"""
+        return CANCEL_GRACE
 
     async def _kill_proc(self, grace: float | None = None):
         """确保子进程退出。可重入：进程已退出或压根没起来时直接返回。"""
@@ -1170,7 +1174,7 @@ class Job:
         # 收尾时 _finish 才置 CANCELED
         self.status = "CANCELING"
         grace = self._cancel_grace()
-        if grace > CANCEL_GRACE_TRANSFER:
+        if not self._transfer_started:
             self.add_log(f"正在取消：等工具通知手机结束本次备份（最多 {grace:g} 秒）。"
                          "直接强制结束的话，手机端要过几分钟才会接受下一次备份")
         self.broadcast({"type": "canceling", "grace": grace})
