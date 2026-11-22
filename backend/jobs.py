@@ -118,12 +118,25 @@ SUDDEN_GAP = 60
 # 打断后会用完整的 30 秒重新等，所以最坏要整 30 秒才轮到检查。之后还要收尾：解同步锁、
 # 新开一条 lockdown 连接发 syncDidFinish、最后给备份服务发 DLMessageDisconnect，Wi-Fi 下
 # 这一步要几秒。45 秒是上限，工具一退出就不再等。
-# 以前一律 5 秒就强杀，收尾全被跳过——真机上每次这样强杀之后，手机端备份服务都有几分钟
-# 不理新连接（握手 30 秒超时报 -1，0006→0007/0008、0011→0013/14/15）
+# 注意：工具正常退出也挡不住手机端那几分钟（见 BUSY_RETRIES）
 CANCEL_GRACE = 45
-# 强杀之后多久内的 -1 归因到「上次被强制结束」（真机恢复要 3 分半到 7 分钟）
-KILL_AFTERMATH = 10 * 60
-_last_kill: dict[str, float] = {}   # udid -> 最近一次 SIGKILL 的时间
+
+# 握手 30 秒没回应（-1）时自动重试。原因由手机 syslog 和进程列表确认（真机 BKP-0022/0023/0024）：
+# 手机上同一时刻只有一个备份进程 BackupAgent2。输完密码后它要生成清单、扫描数据，
+# 这期间不读连接，电脑端取消、断开它都不理，要等扫描告一段落才退出：取消后又活了
+# 3 分 52 秒（工具退出后 3 分 21 秒）。在它退出前发起的新备份，lockdownd 会把连接交给
+# 这个还没退出的进程，它不回应，工具 30 秒后报 -1。强杀还是正常退出都一样。
+# 手机进程列表（os_trace_relay 的 PidList）只在 USB 下可用、Wi-Fi 下会被手机断开，
+# 没法直接问「它走了没有」，只能隔一段时间再试：依次等 60、120、180 秒，加上每次 30 秒的握手，
+# 从第一次握手起能覆盖约 8 分钟。
+# 还没验证：连接交给这个还没退出的进程，会不会让它活得更久（以前隔 2 秒重试、3 分半后再试
+# 都还是 -1）
+BUSY_RETRIES = 3
+BUSY_RETRY_WAIT = 60
+PHASE_BUSY = "手机还在处理上一次备份"
+# 上一次任务握手成功、但没有正常完成（取消、失败、被强杀）多久之内，再遇到 -1 就归因到它
+UNFINISHED_AFTERMATH = 10 * 60
+_last_unfinished: dict[str, float] = {}   # udid -> 上一次没完成的任务结束的时间
 
 # 无线任务的防休眠断言（tools/ivault-keepawake.c）：断言 15 分钟到期，每 5 分钟续一次，
 # 续期失败一两次也还在有效期内。到期由手机自己释放，工具或后端崩了手机也不会一直醒着
@@ -163,6 +176,11 @@ LOCKDOWN_ERRORS = {
     -35: "手机重启后还没解锁过，请先解锁一次再试",
 }
 _VERSION_MISMATCH = "工具和这台 iPhone 的备份协议版本不兼容，可能是 iOS 太新，需要更新 iVault"
+# 手机自己返回的 MBErrorDomain 错误码（工具打印成 ErrorCode N: …）。只收真机见过的
+MB_DEVICE_ERRORS = {
+    # 真机 BKP-0021：开始时手机锁着屏，握手成功后 4 秒就返回 208
+    208: "手机锁着屏：加密备份要先解锁 iPhone 再开始",
+}
 
 
 def _version_exchange_text(m: "re.Match") -> str:
@@ -170,9 +188,9 @@ def _version_exchange_text(m: "re.Match") -> str:
     if code in (-6, -8):
         return _VERSION_MISMATCH
     if code == -1:
-        # USB 上同样会出现（真机 BKP-0013~0015），不是无线特有的
-        return ("没连上手机的备份服务：服务端口开了，但手机 30 秒内没有回应。"
-                "解锁 iPhone、等几分钟再试；还不行就重启 iPhone")
+        # USB、Wi-Fi 都会出现。原因见 BUSY_RETRIES：手机上上一次备份的进程还没退出
+        return ("手机一直没有回应备份请求：多半是手机上还有一次没收尾的备份"
+                "（刚取消或中断的那次，手机还要几分钟才结束）。等几分钟再试，或者重启 iPhone 立刻清掉")
     return MB2_ERRORS.get(code, f"和手机的备份服务握手失败（错误码 {code}）")
 
 
@@ -183,18 +201,15 @@ _ERROR_RULES = [
     (re.compile(r"Could not connect to lockdownd, error code (-?\d+)"),
      lambda m: LOCKDOWN_ERRORS.get(int(m.group(1)), f"连不上手机的管理服务（lockdownd 错误码 {m.group(1)}）")),
     (re.compile(r"^ErrorCode (\d+): (.+)$", re.M),
-     lambda m: f"手机报错 {m.group(1)}：{m.group(2).strip()}"),
+     lambda m: MB_DEVICE_ERRORS.get(int(m.group(1)), f"手机报错 {m.group(1)}：{m.group(2).strip()}")),
     (re.compile(r"No device found"),
      "找不到这台手机：不在同一 Wi-Fi、已休眠，或数据线没插好"),
     (re.compile(r"Could not start service \S+: (.+)$", re.M),
      lambda m: f"手机没有启动备份服务（{m.group(1).strip()}），请解锁 iPhone 后再试"),
     (re.compile(r"device refused to start the (?:backup|restore) process"),
      "手机拒绝开始，请解锁 iPhone 后再试"),
-    # 这一句要按错误码分：idevicebackup2 不检查 mobilebackup2_client_new 的返回值，
-    # 连不上备份服务时客户端是 NULL，version_exchange 第一行就返回 -1（INVALID_ARG）。
-    # 所以 -1 是「端口开了但没连上」，只有 -6 / -8 才是真的版本不兼容。
-    # 真机（Wi-Fi）：强杀一个等密码的备份后 2 秒重试拿到 -1，3 分半后再试还是 -1，
-    # 所以不能断言是「上一个会话没释放」，原因还没确认
+    # 这一句要按错误码分：-1 是握手消息 30 秒没收到（手机上一次的备份进程还没退出，
+    # 见 BUSY_RETRIES），只有 -6 / -8 才是真的版本不兼容
     (re.compile(r"Could not perform backup protocol version exchange, error code (-?\d+)"),
      _version_exchange_text),
     (re.compile(r"protocol version mismatch"), _VERSION_MISMATCH),
@@ -210,10 +225,10 @@ _ERROR_RULES = [
 VERSION_EXCHANGE_RE = re.compile(r"Could not perform backup protocol version exchange, error code -1")
 
 
-def kill_aftermath(udid: str, since: float) -> str:
-    """这次任务开始前 KILL_AFTERMATH 内，同一台设备有没有任务被强杀；有就返回「N 分钟前」这样的说明。"""
-    at = _last_kill.get(udid)
-    if not at or at > since or since - at > KILL_AFTERMATH:
+def unfinished_aftermath(udid: str, since: float) -> str:
+    """这次任务开始前 UNFINISHED_AFTERMATH 内，同一台设备有没有没完成的备份；有就返回「N 分钟前」这样的说明。"""
+    at = _last_unfinished.get(udid)
+    if not at or at > since or since - at > UNFINISHED_AFTERMATH:
         return ""
     mins = int((since - at) // 60)
     return f" {mins} 分钟前" if mins >= 1 else "刚才"
@@ -348,6 +363,11 @@ class Job:
         self._first_err_ts = 0.0              # 最后一次收发数据之后第一条报错的时间
         self._offline_at: float | None = None  # 任务进行中设备从列表里消失的时间
         self._awake_proc: asyncio.subprocess.Process | None = None   # 防休眠工具
+        self._cancel_event = asyncio.Event()  # 取消时置位：重试前的等待要能立刻醒
+        self._negotiated = False              # 握过手：手机上起了这次的备份进程
+        self._device_error = False            # 手机自己返回过 ErrorCode（它会马上收尾）
+        self._handshake_timeout = False       # 本轮工具报了握手 -1
+        self._busy_retries = 0                # 因为握手 -1 自动重试了几次
 
     # ----- 事件广播 -----
 
@@ -491,10 +511,15 @@ class Job:
     def _failure_reason(self, rc: int) -> str:
         """失败原因：把工具输出里的报错翻成能看懂的话，再按连接方式给一句建议。"""
         tail = "\n".join(self.log_tail[-60:])
-        killed = kill_aftermath(self.udid, self.started_at)
-        if killed and VERSION_EXCHANGE_RE.search(tail):
-            return (f"手机端备份服务还没恢复：上一次任务{killed}被强制结束，"
-                    "手机还在等那次备份收尾，暂时不接受新的备份。等几分钟再试，或者重启 iPhone")
+        # 看最后一轮：前几轮的 -1 还留在日志尾部，重试握上手之后的失败不能再归到它
+        if self._handshake_timeout:
+            tried = f"，自动重试 {self._busy_retries} 次也没有" if self._busy_retries else ""
+            prev = unfinished_aftermath(self.udid, self.started_at)
+            if prev:
+                return (f"手机一直没有回应备份请求{tried}：{prev}没完成的那次备份手机还在收尾"
+                        "（手机要几分钟才结束它，这期间不接受新的备份）。等几分钟再试，或者重启 iPhone 立刻清掉")
+            if tried:
+                return f"手机一直没有回应备份请求{tried}。等几分钟再试，或者重启 iPhone"
         why = explain_failure(tail)
         if not why:
             return f"{os.path.basename(config.BIN_IDEVICEBACKUP2)} 退出码 {rc}，没能识别具体原因，请查看本条任务日志"
@@ -653,6 +678,15 @@ class Job:
         m = RECEIVED_RE.search(line)
         if m:
             self._reported_files = int(m.group(1))
+        if line.startswith("Negotiated Protocol Version"):
+            self._negotiated = True
+            if self.phase == PHASE_BUSY:
+                self.phase = "准备中"
+                self.broadcast({"type": "progress", "progress": self.progress, "phase": self.phase})
+        elif line.startswith("ErrorCode "):
+            self._device_error = True
+        elif VERSION_EXCHANGE_RE.search(line):
+            self._handshake_timeout = True
 
         # 手机在等锁屏密码：界面上要明确说出来，否则几分钟的 0% 看起来像卡死
         if PASSCODE_RE.search(line) and not self._transfer_started:
@@ -915,6 +949,10 @@ class Job:
             return
         self.finalized = True
         self.status = status
+        # 握过手却没完成：手机上这次的备份进程还要几分钟才退出，下一次 -1 据此解释。
+        # 手机自己报错（锁屏 208 等）的那次它马上就收尾了，不算
+        if status != "DONE" and self._negotiated and not self._device_error:
+            _last_unfinished[self.udid] = time.time()
         # 跑完一轮电量必然变了，旧读数作废；有人看页面或调度器需要时再查
         device.battery_forget(self.udid)
         if status != "DONE":
@@ -980,8 +1018,6 @@ class Job:
         try:
             proc.kill()
             self._kill_note = f"SIGTERM 后 {grace:g} 秒未退出，已强制结束"
-            # 强杀会让手机端备份服务几分钟不理新连接：记下来，下一次 -1 据此解释原因
-            _last_kill[self.udid] = time.time()
             log.warning("任务 %s 的子进程 pid=%s 在 SIGTERM 后 %g 秒未退出，已强制结束",
                         self.tag(), proc.pid, grace)
         except ProcessLookupError:
@@ -1022,7 +1058,15 @@ class Job:
         # 无线任务和工具并行申请防休眠：申请要几秒，不能让备份等它
         awake = asyncio.create_task(self._keep_awake()) if self._via_wifi else None
         try:
-            return await self._pump_proc(args)
+            while True:
+                self._handshake_timeout = False
+                rc = await self._pump_proc(args)
+                if (rc == 0 or not self._handshake_timeout or self._transfer_started
+                        or self._cancel_requested or self._timeout_err
+                        or self._busy_retries >= BUSY_RETRIES):
+                    return rc
+                if not await self._wait_busy_phone():
+                    return rc
         finally:
             if awake is not None:
                 awake.cancel()
@@ -1030,6 +1074,23 @@ class Job:
                     await awake
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001  收尾不能把任务结果盖掉
                     pass
+
+    async def _wait_busy_phone(self) -> bool:
+        """握手 -1 之后等一会儿再试（原因见 BUSY_RETRIES）。返回 False 表示等的时候被取消了。"""
+        self._busy_retries += 1
+        n = self._busy_retries
+        self.phase = PHASE_BUSY
+        self.broadcast({"type": "progress", "progress": self.progress, "phase": self.phase})
+        wait = BUSY_RETRY_WAIT * n
+        self.add_log(f"手机没有回应：多半是手机上还有一次没收尾的备份（刚取消或中断的那次要几分钟才结束），"
+                     f"{wait} 秒后自动重试（第 {n}/{BUSY_RETRIES} 次）。"
+                     "不想等的话重启 iPhone 能立刻清掉")
+        self._live(f"{PHASE_BUSY}，{wait} 秒后重试（第 {n}/{BUSY_RETRIES} 次）", "progress")
+        try:
+            await asyncio.wait_for(self._cancel_event.wait(), timeout=wait)
+            return False
+        except asyncio.TimeoutError:
+            return not self._cancel_requested
 
     async def _pump_proc(self, args: list[str]) -> int:
         try:
@@ -1169,14 +1230,15 @@ class Job:
         # 建目录、建备份记录都是同步操作，但那一步的 await 仍在）。只改状态的话，
         # 运行的协程看不见旗子，照样会把整轮备份跑完。
         self._cancel_requested = True
+        self._cancel_event.set()
         # CANCELING 而不是直接 CANCELED：工具还没退出，设备仍被占用，
         # USB 看护也不能在这时重启 usbmuxd（会把它收尾要用的连接切断）。
         # 收尾时 _finish 才置 CANCELED
         self.status = "CANCELING"
         grace = self._cancel_grace()
-        if not self._transfer_started:
+        if self.proc and self.proc.returncode is None:
             self.add_log(f"正在取消：等工具通知手机结束本次备份（最多 {grace:g} 秒）。"
-                         "直接强制结束的话，手机端要过几分钟才会接受下一次备份")
+                         "手机自己还要几分钟才收尾，这期间再点备份会自动等它")
         self.broadcast({"type": "canceling", "grace": grace})
         # 不在这里等进程退出，任务的结束由 SSE 推给页面
         self._kill_task = self._spawn_kill()
@@ -1288,7 +1350,9 @@ class device_lock:
 def active_jobs() -> list[dict]:
     return [
         {"id": j.id, "udid": j.udid, "source_udid": j.source_udid, "kind": j.kind,
-         "status": j.status, "progress": j.progress, "phase": j.phase, "started_at": j.started_at}
+         "status": j.status, "progress": j.progress, "phase": j.phase, "started_at": j.started_at,
+         # 前端点取消前据此决定要不要提醒「手机要几分钟才收尾」
+         "negotiated": j._negotiated, "transferring": j._transfer_started}
         # CANCELING 也算：工具还没退出，设备仍被占用（USB 看护据此暂缓重启 usbmuxd）
         for j in _jobs.values() if j.status in ("RUNNING", "CANCELING")
     ]

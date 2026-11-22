@@ -1092,6 +1092,18 @@ async function cancelJob() {
   if (!id) { toast('当前没有进行中的任务'); return; }
   const btn = $('jobActBtn');
   btn.disabled = true;
+  /* 握过手、还没开始传：手机上的备份进程已经起来了，输没输密码都一样，
+     取消后它还要几分钟才退出，这期间新的备份会一直等（见 docs/troubleshooting.md）。
+     查不到状态时不拦，照常取消 */
+  let j = null;
+  try { j = (await api('/api/jobs/active')).find(x => x.id === id); } catch (e) { /* 照常取消 */ }
+  if (j && j.negotiated && !j.transferring && !confirm(
+      '现在取消，手机还要几分钟（实测约 4 分钟）才结束这次备份。\n\n' +
+      '这期间再点备份会先等手机（卡片显示「手机还在处理上一次备份」），' +
+      '重启 iPhone 能立刻清掉。\n\n确定取消吗？')) {
+    btn.disabled = false;
+    return;
+  }
   try {
     await api('/api/jobs/' + id + '/cancel', { method: 'POST' });
   } catch (e) {
@@ -1099,8 +1111,8 @@ async function cancelJob() {
     toast('取消失败：' + e.message);
   }
 }
-/* 取消已受理、工具还没退出。等密码阶段最多要等半分钟：工具要先通知手机结束这次备份，
-   直接强杀的话手机端要过几分钟才接受下一次备份。这段时间按钮保持禁用，别让人以为没点上 */
+/* 取消已受理、工具还没退出。等密码阶段最多要等半分钟：工具卡在一次 30 秒的接收里，
+   要等它返回才会通知手机结束这次备份。这段时间按钮保持禁用，别让人以为没点上 */
 function showCanceling(grace) {
   const btn = $('jobActBtn');
   btn.disabled = true;
