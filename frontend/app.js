@@ -5,20 +5,36 @@
 (function () {
   const sun = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.3m0 14.4v2.3M2.5 12h2.3m14.4 0h2.3M5 5l1.6 1.6M17.4 17.4L19 19M19 5l-1.6 1.6M6.6 17.4L5 19"/></svg>';
   const moon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20.4 14.2A8.3 8.3 0 019.8 3.6a8.3 8.3 0 1010.6 10.6z"/></svg>';
+  const auto = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="8.6"/><path d="M12 3.4v17.2A8.6 8.6 0 0012 3.4z" fill="currentColor"/></svg>';
   const root = document.documentElement;
   const btn = document.getElementById('themeBtn');
   const lbl = document.getElementById('themeLabel');
-  function apply(t) {
-    root.dataset.theme = t;
-    btn.innerHTML = t === 'dark' ? sun : moon;
-    lbl.textContent = t === 'dark' ? '深色模式' : '浅色模式';
-  }
-  apply(localStorage.getItem('ivault-theme') || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
-  btn.onclick = () => {
-    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
-    localStorage.setItem('ivault-theme', next);
-    apply(next);
+  const sys = matchMedia('(prefers-color-scheme: light)');
+  /* 三档：auto（跟随系统，不存）/ light / dark。以前只有两档且点一下就写死，
+     之后永远回不到跟随系统；系统切换深浅色时页面也不会变，要刷新 */
+  const pref = () => {
+    const v = localStorage.getItem('ivault-theme');
+    return v === 'light' || v === 'dark' ? v : 'auto';
   };
+  function apply() {
+    const p = pref();
+    const t = p === 'auto' ? (sys.matches ? 'light' : 'dark') : p;
+    root.dataset.theme = t;
+    btn.innerHTML = p === 'auto' ? auto : t === 'dark' ? moon : sun;
+    lbl.textContent = p === 'auto' ? '跟随系统' : t === 'dark' ? '深色模式' : '浅色模式';
+    btn.title = '主题：' + lbl.textContent + '（点击切换）';
+  }
+  apply();
+  /* 系统深浅色变化时实时跟随；手动选了浅色/深色时 apply 里按存下的值，不受影响 */
+  sys.addEventListener('change', apply);
+  btn.onclick = () => {
+    const next = { auto: 'light', light: 'dark', dark: 'auto' }[pref()];
+    if (next === 'auto') localStorage.removeItem('ivault-theme');
+    else localStorage.setItem('ivault-theme', next);
+    apply();
+  };
+  /* 另一个页签改了主题，这里也跟着变 */
+  addEventListener('storage', e => { if (e.key === 'ivault-theme') apply(); });
 })();
 
 /* ---------- 工具 ---------- */
