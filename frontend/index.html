@@ -293,8 +293,9 @@ html[data-view="settings"] #view-settings{display:block}
 
 /* ===== 配对向导（浮层，覆盖在主区上方） ===== */
 .wiz-overlay{position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;
-  /* 左侧让出侧栏宽度，使浮层在右侧内容区里居中 */
-  padding:32px 32px 32px calc(var(--side-w) + 32px);
+  /* 整屏居中：不再给侧栏让宽度。以前按内容区居中，弹窗整体偏右，
+     和「这层遮罩压住了整个界面」的观感对不上 */
+  padding:32px;
   background:rgba(4,9,14,.55);backdrop-filter:blur(5px);animation:wizfade .2s ease}
 @keyframes wizfade{from{opacity:0}to{opacity:1}}
 .wizard{width:100%;max-width:520px;margin:0;position:relative;overflow:auto;
@@ -319,7 +320,7 @@ html[data-view="settings"] #view-settings{display:block}
 .log-btn{background:none;border:1px solid transparent;color:var(--txt3);font-size:11px;
   padding:2px 7px;border-radius:7px;cursor:pointer;margin-left:7px;font-family:inherit;transition:.18s}
 .log-btn:hover{color:var(--green2);border-color:rgba(0,196,127,.4);background:var(--card-hover)}
-@media (max-width:1000px){.wiz-overlay{padding:20px calc(20px + var(--safe-r)) 20px calc(var(--side-w) + 20px + var(--safe-l))}}
+@media (max-width:1000px){.wiz-overlay{padding:20px calc(20px + var(--safe-r)) 20px calc(20px + var(--safe-l))}}
 .steps{display:flex;align-items:center;margin-bottom:28px}
 .step{flex:1;text-align:center;position:relative}
 .step .c{width:34px;height:34px;border-radius:99px;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;
