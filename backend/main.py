@@ -392,8 +392,9 @@ async def _refresh_transports(probe: str | None = None) -> None:
         if a == b:
             continue
         device.battery_forget(udid)
-        # 任务进行中的每次变化都进任务日志，不受下面 OFFLINE_LOG_GRACE 的限制
-        job = jobs.busy_job(udid)
+        # 任务进行中的每次变化都进任务日志，不受下面 OFFLINE_LOG_GRACE 的限制。
+        # 首扫跳过：那时 old 是空的，「离线 → Wi-Fi」是假的
+        job = jobs.busy_job(udid) if not _first_scan else None
         if job is not None and job.udid == udid:   # 换机恢复的来源设备在不在线无所谓
             why = device.net_offline_reason(udid) if b is None and a == device.TRANSPORT_NET else ""
             job.note_transport(a, b, why)

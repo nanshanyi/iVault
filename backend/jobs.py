@@ -458,7 +458,9 @@ class Job:
             b = await device.battery_refresh(self.udid)
         except Exception:  # noqa: BLE001
             b = None
-        self.add_log("结束时" + (_batt_text(b) or "电量读不到（手机可能已断开）"))
+        # 恢复失败时手机可能正停在重启阶段，读不到电量很正常，不往「断开」上引
+        miss = "电量读不到" if self.kind == "RESTORE" else "电量读不到（手机可能已断开）"
+        self.add_log("结束时" + (_batt_text(b) or miss))
 
     def _elapsed_text(self) -> str:
         sec = max(0, int(time.time() - (self.started_at or time.time())))
