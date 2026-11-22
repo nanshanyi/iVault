@@ -183,8 +183,12 @@ async def device_info(udid: str) -> dict:
 # 无线要新建一条网络 lockdown 连接，慢时 6 秒，还可能把休眠的手机网络唤醒。
 # 所以读和查分开：页面、调度器读 battery_cached()（零开销），
 # 真正去查只有 battery_refresh()，由调用方按 battery_stale() 决定要不要查。
+#
+# TTL 的取舍：无线原来 10 分钟，插上充电器后要等一整轮才变绿，容易让人以为
+# 没识别到；现在 2 分钟。采样只在有页面打开时发生（见 main._battery_sampler），
+# 所以关掉网页就完全不会唤醒手机。
 BATTERY_MAX_AGE_USB = 60
-BATTERY_MAX_AGE_NET = 600
+BATTERY_MAX_AGE_NET = 120
 
 # udid -> {"level", "charging", "external", "full", "at"}；查过但读不到时只有 {"at"}
 _battery: dict[str, dict] = {}
@@ -203,7 +207,7 @@ def battery_sampled(udid: str) -> bool:
 
 
 def battery_stale(udid: str, max_age: float | None = None) -> bool:
-    """读数是否过期。max_age 不给时按连接方式：USB 60 秒，无线 10 分钟。
+    """读数是否过期。max_age 不给时按连接方式：USB 60 秒，无线 2 分钟。
 
     「查过但没读到」也算一次采样：设备忙或字段缺失时，不能每轮都重查。
     """

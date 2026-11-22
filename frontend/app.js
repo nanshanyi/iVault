@@ -244,9 +244,10 @@ function battChip(b, showAge) {
   const w = Math.max(1.6, 14.2 * level / 100).toFixed(1);
   const bolt = chg ? '<svg class="bolt" viewBox="0 0 24 24" fill="currentColor">' +
     '<path d="M13.5 2 5 14h6l-1 8 9-12h-6l.5-8z"/></svg>' : '';
-  /* 无线设备 10 分钟才采一次（USB 60 秒），旧读数要标出时间，别被当成实时值 */
-  const mins = b.at ? Math.floor((Date.now() / 1000 - b.at) / 60) : 0;
-  const age = mins >= 2 ? mins + ' 分钟前' : '';
+  /* 无线设备 2 分钟才采一次（USB 60 秒），旧读数要标出时间，别被当成实时值。
+     超过 1 分钟就标：采样周期本身是分钟级，藏着时间反而让人以为没刷新。 */
+  const mins = b.at ? Math.max(0, Math.floor((Date.now() / 1000 - b.at) / 60)) : 0;
+  const age = mins >= 1 ? mins + ' 分钟前' : '';
   return '<span class="batt ' + (chg ? 'chg' : low ? 'low' : '') + '" title="' +
     (chg ? '充电中 · ' : '') + level + '%' + (age ? ' · ' + age + '读取' : '') + '">' + bolt +
     '<svg viewBox="0 0 24 24" fill="none">' +
@@ -391,7 +392,7 @@ function renderDashboard() {
                    '<i style="width:' + pct + '%"></i></div>' +
                    '<b class="dp-pct" id="dpc-' + esc(d.udid) + '">' + pct + '%</b></div>' : '') +
         '</div>' +
-        battChip(d.battery) +
+        battChip(d.battery, true) +
         '<span class="badge ' + (live ? 'g' : 'a') + '"><i class="tag-ico"></i>' +
           (conn === 'network' ? 'Wi-Fi' : live ? 'USB' : '离线') + '</span>' +
         '</div>');

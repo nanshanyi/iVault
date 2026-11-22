@@ -357,7 +357,7 @@ async def _refresh_transports(probe: str | None = None) -> None:
     old = _state["transports"]
     new = {d["udid"]: d["connection"] for d in devs}
     # 离线或换了连接方式时旧电量作废：无线换成 USB 就是插上线开始充电了，
-    # 留着旧读数的话，调度器要等它过期（无线 10 分钟）才发现可以备份
+    # 留着旧读数的话，调度器要等它过期（无线 2 分钟）才发现可以备份
     label = {device.TRANSPORT_USB: "USB", device.TRANSPORT_NET: "Wi-Fi"}
     now = time.time()
     # 插线检测放在这里而不是 _device_poller：备份、恢复、改加密的接口也会调这个函数，
@@ -460,7 +460,7 @@ _viewer_wake = asyncio.Event()
 
 
 async def _battery_sampler():
-    """只在有页面开着时给卡片采电量：USB 60 秒、无线 10 分钟一次（见 device.BATTERY_MAX_AGE_*）。
+    """只在有页面开着时给卡片采电量：USB 60 秒、无线 2 分钟一次（见 device.BATTERY_MAX_AGE_*）。
 
     没人看页面时一次都不查。调度器和手动备份要电量时自己按需现查，不靠这里。
     读数过期的设备并发去查，慢的无线设备不会拖住其他设备。
@@ -607,7 +607,7 @@ async def _battery_block_reason(udid: str, max_age: float | None = 0) -> str | N
     """电量过低且未接电源时返回拒绝原因，否则 None。
 
     max_age=0（手动备份）总是现查；调度器传 None，按连接方式复用未过期的读数
-    （USB 60 秒、无线 10 分钟），被电量拦住的无线设备因此最多 10 分钟查一次。
+    （USB 60 秒、无线 2 分钟），被电量拦住的无线设备因此最多 2 分钟查一次。
 
     取不到电量时一律放行：这条检查是「避免备份跑到一半没电」，不是安全边界，
     不能因为查询失败（设备忙、字段缺失）就把正常备份挡在门外。
@@ -1083,7 +1083,7 @@ async def _scheduler_loop():
                             continue
                         # 电量过低且没接电源：这一轮跳过（不写失败记录），充上电后自然补跑。
                         # 定时任务没人盯着，跑到一半没电最容易留下半截备份。
-                        # max_age=None：复用未过期读数，被拦住的无线设备最多 10 分钟查一次；
+                        # max_age=None：复用未过期读数，被拦住的无线设备最多 2 分钟查一次；
                         # 插上线时连接方式变化会作废读数，下一轮（20 秒内）就能放行。
                         reason = await _battery_block_reason(udid, max_age=None)
                         if reason:
