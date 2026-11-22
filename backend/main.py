@@ -536,7 +536,39 @@ async def status():
         "backup_dir": config.BACKUP_DIR,
         "data_dir": config.DATA_DIR,
         "disk_free_bytes": disk_free,
+        "activity": _activity(),
     }
+
+
+ACTIVITY_DAYS = 30
+
+
+def _activity() -> dict:
+    """总览「最近 30 天」：每台已配对设备每天的结果，外加最近一次成功、最近一次结果。
+
+    days 里只放有记录的日子，前端按日期补空格子；日期是容器本地日期（YYYY-MM-DD）。
+    最近一次成功不限 30 天：两个月没备份的设备，要能显示「62 天前」而不是「无」
+    """
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=ACTIVITY_DAYS - 1)
+    since = int(datetime.datetime.combine(start, datetime.time()).timestamp())
+    by_dev: dict[str, dict] = {}
+    for r in store.daily_outcomes(since):
+        by_dev.setdefault(r["udid"], {})[r["day"]] = {"ok": r["ok"], "failed": r["failed"]}
+    out = []
+    for d in store.list_devices():
+        udid = d["udid"]
+        recent = store.list_backups(udid, limit=20, backups_only=True)
+        last = next((b for b in recent if b["status"] in ("COMPLETE", "FAILED")), None)
+        ok = next((b for b in recent if b["status"] == "COMPLETE"), None)
+        out.append({
+            "udid": udid,
+            "days": by_dev.get(udid, {}),
+            "last_ok_at": (ok["finished_at"] or ok["started_at"]) if ok else d.get("last_backup_at"),
+            "last_status": last["status"] if last else None,
+            "last_error": (last.get("error") or "") if last and last["status"] == "FAILED" else "",
+        })
+    return {"from": start.isoformat(), "to": today.isoformat(), "devices": out}
 
 
 def shutil_disk_free(path: str) -> int:

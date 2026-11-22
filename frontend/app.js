@@ -313,29 +313,47 @@ let liveJobState = 'idle';
 let lastUnpairUdid = null;
 
 /* ---------- 热力图（最近 105 天，按完成日聚合） ---------- */
-function renderHeat(backups) {
-  const h = $('heat');
-  h.innerHTML = '';
-  const byDay = {};
-  backups.forEach(s => {
-    if (s.status === 'COMPLETE' && s.kind !== 'RESTORE' && s.finished_at) {
-      const d = new Date(s.finished_at * 1000);
-      const k = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
-      byDay[k] = (byDay[k] || 0) + 1;
-    }
-  });
-  for (let i = 104; i >= 0; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i);
-    const k = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
-    const el = document.createElement('i');
-    const n = byDay[k] || 0;
-    if (n >= 3) el.className = 'l4';
-    else if (n === 2) el.className = 'l3';
-    else if (n === 1) el.className = 'l2';
-    h.appendChild(el);
+/* 「最近 30 天」：每台设备一行，每天一格。数据由后端按「设备 × 天」汇总好（/api/status 的
+   activity），不再拿最近 100 条任务记录在前端数——设备一多就被截断。
+   日期用后端给的 from / to（容器本地日期），不用浏览器时钟：两边时区不同时格子会错位 */
+function renderActivity(act) {
+  const box = $('activity');
+  if (!box) return;
+  const devs = (act && act.devices) || [];
+  if (!devs.length) {
+    box.innerHTML = '<div class="empty" style="padding:14px 0">配对设备后，这里按天显示每台设备的备份结果</div>';
+    return;
   }
-  const from = new Date(); from.setDate(from.getDate() - 104);
-  $('heatFrom').textContent = (from.getMonth() + 1) + ' 月 ' + from.getDate() + ' 日';
+  const days = [];
+  for (let d = new Date(act.from + 'T00:00:00'); ; d.setDate(d.getDate() + 1)) {
+    const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    days.push(k);
+    if (k >= act.to || days.length >= 31) break;
+  }
+  const md = k => +k.slice(5, 7) + '-' + +k.slice(8, 10);
+  /* 按日历日算：昨晚 21 点到今早 9 点只隔 12 小时，也该是「昨天」 */
+  const ago = ts => {
+    const a = new Date(ts * 1000), b = new Date();
+    a.setHours(0, 0, 0, 0); b.setHours(0, 0, 0, 0);
+    const n = Math.round((b - a) / 86400000);
+    return n <= 0 ? '今天' : n === 1 ? '昨天' : n + ' 天前';
+  };
+  box.innerHTML = devs.map(d => {
+    const cells = days.map(k => {
+      const v = d.days[k];
+      const cls = (v && v.ok ? 'ok' : v && v.failed ? 'bad' : '') + (k === act.to ? ' today' : '');
+      const tip = md(k) + (v ? ' · ' + [v.ok ? '成功 ' + v.ok + ' 次' : '', v.failed ? '失败 ' + v.failed + ' 次' : '']
+        .filter(Boolean).join(' · ') : ' · 没备份');
+      return '<i class="' + cls.trim() + '" title="' + tip + '"></i>';
+    }).join('');
+    const failed = d.last_status === 'FAILED';
+    const sum = (d.last_ok_at ? ago(d.last_ok_at) + '成功' : '还没有成功的备份') +
+      (failed ? ' · 最近一次失败' : '');
+    return '<div class="act-row"><div class="act-name" title="' + esc(devName(d.udid)) + '">' + esc(devName(d.udid)) + '</div>' +
+      '<div class="act-days">' + cells + '</div>' +
+      '<div class="act-sum' + (failed ? ' warn' : '') + '"' + (failed && d.last_error ? ' title="' + esc(d.last_error) + '"' : '') + '>' +
+      esc(sum) + '</div></div>';
+  }).join('') + '<div class="act-axis"><span>' + md(days[0]) + '</span><span>今天</span></div>';
 }
 
 function devName(udid) {
@@ -414,7 +432,7 @@ function renderDashboard() {
         '</div>');
   });
 
-  renderHeat(backups);
+  renderActivity(state.status.activity);
   const tl = $('timeline');
   tl.innerHTML = '';
   if (!backups.length) tl.innerHTML = '<div class="tl-item"><div class="t">暂无备份记录</div><div class="d">完成首次备份后，这里会显示动态</div></div>';

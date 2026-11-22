@@ -262,10 +262,23 @@ html[data-view="settings"] #view-settings{display:block}
 .enc-hint{font-size:11px;color:var(--txt3);margin-top:7px;line-height:1.65}
 .enc-hint.warn{color:var(--amber)}
 
-.heat{display:grid;grid-template-rows:repeat(7,11px);grid-auto-flow:column;gap:3.5px;margin-top:14px}
-.heat i{width:11px;height:11px;border-radius:3px;background:var(--heat0)}
-.heat i.l1{background:rgba(0,196,127,.25)} .heat i.l2{background:rgba(0,196,127,.5)}
-.heat i.l3{background:rgba(0,196,127,.75)} .heat i.l4{background:var(--green)}
+/* 「最近 30 天」：每台设备一行，每天一格。绿=当天有成功，红=当天只有失败，灰=没备份 */
+.act{margin-top:12px}
+.act-row{display:grid;grid-template-columns:minmax(64px,110px) 1fr;align-items:center;gap:6px 14px;
+  padding:9px 0;border-top:1px solid var(--row-line)}
+.act-row:first-child{border-top:none}
+.act-name{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act-days{display:grid;grid-template-columns:repeat(30,1fr);gap:3px}
+.act-days i,.act-legend i{display:block;aspect-ratio:1;border-radius:3px;background:var(--heat0)}
+.act-days i.ok,.act-legend i.ok{background:var(--green)}
+.act-days i.bad,.act-legend i.bad{background:var(--red)}
+.act-days i.today{outline:1.5px solid var(--txt3);outline-offset:1px}
+.act-sum{grid-column:2;font-size:11px;color:var(--txt3)}
+.act-sum.warn{color:var(--red)}
+.act-axis{display:flex;justify-content:space-between;margin:6px 0 0 calc(min(110px,25%) + 14px);
+  font-size:10.5px;color:var(--txt3)}
+.act-legend{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--txt3);white-space:nowrap}
+.act-legend i{width:9px;margin-left:6px}
 
 .timeline{position:relative;padding-left:20px}
 .timeline::before{content:"";position:absolute;left:5px;top:6px;bottom:6px;width:1.5px;
@@ -564,9 +577,10 @@ td b{color:var(--txt);font-weight:600}
   /* 三个操作按钮在手机上分两行：备份占一行，历史/取消配对并排 */
   .dev-actions{padding:12px 14px;gap:8px}
   .dev-actions .btn{flex:1;justify-content:center;padding-left:10px;padding-right:10px}
-  .heat{gap:3px}
-  .heat i{width:9px;height:9px;border-radius:2.5px}
-  .heat{grid-template-rows:repeat(7,9px)}
+  .act-row{grid-template-columns:1fr}
+  .act-sum{grid-column:1}
+  .act-days{gap:2px}
+  .act-axis{margin-left:0}
 
   /* —— 任务进行中：圆环在上，统计在下 —— */
   .job-live{flex-direction:column;align-items:stretch;gap:18px}
@@ -688,13 +702,11 @@ td b{color:var(--txt);font-weight:600}
         <div id="dashDevs"></div>
       </div>
       <div class="card">
-        <b style="font-size:14.5px">最近 15 周备份日历</b>
-        <div class="heat" id="heat"></div>
-        <div style="display:flex;justify-content:space-between;margin-top:14px;font-size:11px;color:var(--txt3)">
-          <span id="heatFrom">—</span>
-          <span style="display:flex;align-items:center;gap:4px">少<i class="heat" style="display:grid;grid-template-rows:none;grid-auto-flow:column;margin:0 4px"><i></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i></i>多</span>
-          <span>今天</span>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
+          <b style="font-size:14.5px">最近 30 天</b>
+          <span class="act-legend"><i class="ok"></i>成功<i class="bad"></i>失败<i></i>没备份</span>
         </div>
+        <div id="activity" class="act"></div>
       </div>
     </div>
     <div class="card">

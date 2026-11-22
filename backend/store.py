@@ -226,6 +226,26 @@ def get_backup(backup_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def daily_outcomes(since: int) -> list[dict]:
+    """since 之后每台设备每天的备份结果：成功几次、失败几次（不含恢复与取消）。
+
+    给总览的「最近 30 天」记录条用。按天汇总在库里做：前端拿 /api/backups 的
+    最近 100 条自己数的话，设备一多或失败重试多就被截断，前面的日子全是空的。
+    「天」按容器本地时区（compose 里的 TZ），和界面显示的日期一致
+    """
+    rows = conn().execute(
+        """SELECT udid,
+                  date(COALESCE(finished_at, started_at), 'unixepoch', 'localtime') AS day,
+                  SUM(status='COMPLETE') AS ok, SUM(status='FAILED') AS failed
+           FROM backups
+           WHERE kind='BACKUP' AND status IN ('COMPLETE', 'FAILED')
+             AND COALESCE(finished_at, started_at) >= ?
+           GROUP BY udid, day""",
+        (since,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_backups(udid: str | None = None, limit=100, backups_only: bool = False) -> list[dict]:
     """列表不返回 log 全文（单条可达几十 KB），只给 has_log 供前端决定是否显示入口。
 
