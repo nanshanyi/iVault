@@ -32,9 +32,14 @@
 
 **跑在任何能运行 Docker 的 NAS 上**：群晖、威联通、绿联、飞牛、TrueNAS、Unraid、树莓派或普通 Linux 主机都可以。唯一的硬要求是容器能拿到 USB 总线（`privileged` + `/dev/bus/usb` 映射）。
 
-<!-- 截图占位：把界面截图放到 assets/screenshot.png 后取消下面这行的注释
-<p align="center"><img src="assets/screenshot.png" width="860" alt="iVault 界面"></p>
--->
+<p align="center">
+  <!-- 跟随 GitHub 的深浅色自动切图（<picture> + prefers-color-scheme）。
+       两个主题各一份文件；?v= 破除 camo 缓存，换图后把数字加一即可 -->
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dashboard-dark.jpg?v=1">
+    <img src="assets/screenshots/dashboard-light.jpg?v=1" width="900" alt="iVault 总览：设备状态、备份进度与最近动态">
+  </picture>
+</p>
 
 > [!WARNING]
 > iVault 还在早期开发阶段，请先读完这几条再用：
@@ -63,6 +68,49 @@
 | 设备状态 | 卡片显示连接方式、电量与充电状态；电量过低且未接电源时拒绝开始备份 |
 | 失败早发现 | 备份前检查磁盘剩余空间，低于阈值拒绝开始 |
 | 深浅色主题 | 跟随系统 / 手动切换 / 记忆选择 |
+
+## 界面
+
+<!-- 每张图都是 <picture>：GitHub 深色模式取 -dark，浅色模式取 -light -->
+
+<table>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/devices-dark.jpg?v=1">
+        <img src="assets/screenshots/devices-light.jpg?v=1" alt="设备管理">
+      </picture>
+    </td>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/task-dark.jpg?v=1">
+        <img src="assets/screenshots/task-light.jpg?v=1" alt="备份任务">
+      </picture>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>设备管理</b> · 连接方式、电量与充电状态、备份加密开关</sub></td>
+    <td align="center"><sub><b>备份任务</b> · 进度环、已用时间与实时日志（SSE 推送，断线重连）</sub></td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-dark.jpg?v=1">
+        <img src="assets/screenshots/settings-light.jpg?v=1" alt="设置">
+      </picture>
+    </td>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/mobile-dark.jpg?v=1">
+        <img src="assets/screenshots/mobile-light.jpg?v=1" width="290" alt="手机端">
+      </picture>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>设置</b> · 备份计划、通知与存储路径</sub></td>
+    <td align="center"><sub><b>手机端</b> · 侧栏收为底部标签栏</sub></td>
+  </tr>
+</table>
 
 ## 快速开始
 
