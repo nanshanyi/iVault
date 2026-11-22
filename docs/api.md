@@ -24,7 +24,9 @@ GET    /api/backups/{id}/log       某次任务的完整日志（事后排查）
 DELETE /api/backups/{id}           删除任务记录（进行中的返回 409）
 GET    /api/restore/sources        可恢复的备份来源（含已取消配对的设备）
 POST   /api/restore                {udid, source_udid?, password?} 恢复；source_udid 不同于 udid 即换机
-GET/PUT /api/settings              定时、Webhook、通知范围、日志详细度
+GET/PUT /api/settings              定时（schedule_enabled / schedule_time / schedule_freq /
+                                   schedule_weekdays / schedule_monthday）、插线备份（usb_autobackup）、
+                                   Webhook、通知范围、日志详细度
 POST   /api/settings/test-webhook  {url?} 发送测试通知
 GET    /api/diagnostics            版本 / 系统 / 设备 / 最近告警，纯文本一键复制
 GET    /api/docs                   Swagger 文档
