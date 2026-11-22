@@ -1097,13 +1097,28 @@ async function cancelJob() {
      查不到状态时不拦，照常取消 */
   let j = null;
   try { j = (await api('/api/jobs/active')).find(x => x.id === id); } catch (e) { /* 照常取消 */ }
-  if (j && j.negotiated && !j.transferring && !confirm(
-      '现在取消，手机还要几分钟（实测约 4 分钟）才结束这次备份。\n\n' +
-      '这期间再点备份会先等手机（卡片显示「手机还在处理上一次备份」），' +
-      '重启 iPhone 能立刻清掉。\n\n确定取消吗？')) {
-    btn.disabled = false;
-    return;
-  }
+  if (!(j && j.negotiated && !j.transferring)) { await doCancelJob(id); return; }
+  btn.disabled = false;
+  openDlg({
+    title: '确定取消这次备份？',
+    okText: '取消备份',
+    cancelText: '继续备份',
+    danger: true,
+    body:
+      '<ul class="dlg-note">' +
+        '<li>手机上的备份已经开始准备，取消后它还要<b>几分钟</b>（实测约 4 分钟）才结束</li>' +
+        '<li>这期间再点备份会先等手机，卡片显示「手机还在处理上一次备份」</li>' +
+        '<li>不想等的话，重启 iPhone 能立刻清掉</li>' +
+      '</ul>'
+  }, async () => {
+    /* 浮层开着的时候任务可能已经自己结束了 */
+    if (!currentJob || currentJob.id !== id) return;
+    btn.disabled = true;
+    await doCancelJob(id);
+  });
+}
+async function doCancelJob(id) {
+  const btn = $('jobActBtn');
   try {
     await api('/api/jobs/' + id + '/cancel', { method: 'POST' });
   } catch (e) {
@@ -1111,8 +1126,8 @@ async function cancelJob() {
     toast('取消失败：' + e.message);
   }
 }
-/* 取消已受理、工具还没退出。等密码阶段最多要等半分钟：工具卡在一次 30 秒的接收里，
-   要等它返回才会通知手机结束这次备份。这段时间按钮保持禁用，别让人以为没点上 */
+/* 取消已受理、工具还没退出。备份最多 5 秒就强制结束；恢复会等工具自己退出，最多 45 秒。
+   这段时间按钮保持禁用，别让人以为没点上 */
 function showCanceling(grace) {
   const btn = $('jobActBtn');
   btn.disabled = true;
@@ -1210,10 +1225,12 @@ function renderRestore() {
 
 /* ---------- 通用表单浮层（恢复、备份加密共用） ---------- */
 let _dlgOk = null;
-function openDlg({ title, body, okText, danger }, onOk) {
+function openDlg({ title, body, okText, cancelText, danger }, onOk) {
   $('dlgTitle').textContent = title;
   $('dlgBody').innerHTML = body;
   $('dlgErr').style.display = 'none';
+  /* 关闭按钮默认叫「取消」；确认的动作本身就是取消时要换个说法，不然两个按钮分不清 */
+  $('dlgCancel').textContent = cancelText || '取消';
   const ok = $('dlgOk');
   ok.textContent = okText || '确定';
   ok.className = 'btn ' + (danger ? 'danger' : 'primary');

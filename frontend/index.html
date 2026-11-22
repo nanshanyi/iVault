@@ -932,7 +932,7 @@ td b{color:var(--txt);font-weight:600}
     <div class="dlg-body" id="dlgBody"></div>
     <p id="dlgErr" style="color:var(--red);font-size:12.5px;display:none;margin-top:12px;line-height:1.6"></p>
     <div class="wiz-actions" style="justify-content:flex-end">
-      <button class="btn ghost" onclick="closeDlg()">取消</button>
+      <button class="btn ghost" id="dlgCancel" onclick="closeDlg()">取消</button>
       <button class="btn primary" id="dlgOk" onclick="dlgSubmit()">确定</button>
     </div>
     <button class="wiz-close" onclick="closeDlg()" title="关闭（Esc）">

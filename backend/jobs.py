@@ -112,14 +112,19 @@ STALL_PREFIX = "传输中断"
 SUDDEN_GAP = 60
 
 # 取消时给工具留多久自己退出（之后才 SIGKILL）。
-# idevicebackup2 收到 SIGTERM 只是把 quit_flag 加一，要等手上那次接收返回才会检查它。
+# idevicebackup2 收到 SIGTERM 只是把 quit_flag 加一，要等手上那次接收返回才会检查它：
 # 传数据时每收一块就检查一次，1 秒内就退出（真机 BKP-0010）；卡在等消息时（等密码、握手、
-# 手机准备，传输中两个数据域之间也可能），那次接收写死 30 秒超时，而 glue 的 poll 被信号
-# 打断后会用完整的 30 秒重新等，所以最坏要整 30 秒才轮到检查。之后还要收尾：解同步锁、
-# 新开一条 lockdown 连接发 syncDidFinish、最后给备份服务发 DLMessageDisconnect，Wi-Fi 下
-# 这一步要几秒。45 秒是上限，工具一退出就不再等。
-# 注意：工具正常退出也挡不住手机端那几分钟（见 BUSY_RETRIES）
-CANCEL_GRACE = 45
+# 手机准备）那次接收写死 30 秒超时，glue 的 poll 被信号打断后还会重新等满，最坏整 30 秒。
+#
+# 备份只等 5 秒。等工具自己退出对手机没有帮助：准备阶段手机上的 BackupAgent2 不读连接，
+# 工具发的结束通知和强杀后连接断开对它没区别，都要约 4 分钟后才退出（真机 5 秒强杀的
+# BKP-0006/0011 和等工具退出的 BKP-0017/0022，之后的重试一样全是 -1）。同步锁挂在 AFC 连接上，
+# 连接断了手机就会释放。手机还没收尾时再发起的备份由 BUSY_RETRIES 自动等。
+#
+# 恢复等 45 秒：恢复时取消还没在真机上测过，文件发完后手机要自己应用很久，
+# 这时强杀的后果不清楚，宁可多等。45 秒是上限，工具一退出就不再等
+CANCEL_GRACE_BACKUP = 5
+CANCEL_GRACE_RESTORE = 45
 
 # 握手 30 秒没回应（-1）时自动重试。原因由手机 syslog 和进程列表确认（真机 BKP-0022/0023/0024）：
 # 手机上同一时刻只有一个备份进程 BackupAgent2。输完密码后它要生成清单、扫描数据，
@@ -866,7 +871,7 @@ class Job:
         """等手机超时：记原因，结束进程。任务按失败收尾（不是取消：没人点取消）。
 
         结束进程放到独立任务里：心跳任务会在 _pump 收尾时被取消，在这里 await
-        的话强杀可能做到一半就断了。等密码阶段工具最长要 30 多秒才响应 SIGTERM（见 CANCEL_GRACE）。
+        的话强杀可能做到一半就断了（SIGTERM 后的等待见 _cancel_grace）。
         """
         minutes = self.wait_timeout // 60
         reason = "，可能没有在 iPhone 上输入锁屏密码" if self._passcode_seen else ""
@@ -892,7 +897,7 @@ class Job:
     def _spawn_kill(self) -> asyncio.Task:
         """在后台结束子进程，不等它。
 
-        SIGTERM 后最多要等 CANCEL_GRACE 秒，调用方（心跳、取消接口）不该跟着等。done_callback
+        SIGTERM 后要等一会儿（见 _cancel_grace），调用方（心跳、取消接口）不该跟着等。done_callback
         负责把异常取出来记日志，不然 _kill_proc 万一抛错会变成 Task exception was
         never retrieved。_pump 的 finally 还会再调一次 _kill_proc 兜底，并且会等进程真正退出
         """
@@ -990,11 +995,8 @@ class Job:
             log.warning("任务 %s webhook 通知失败：%s", self.id, e)
 
     def _cancel_grace(self) -> float:
-        """SIGTERM 之后最多等多久再强杀（见 CANCEL_GRACE）。
-
-        不按阶段区分：传输中工具也可能正卡在一次 30 秒的接收里，短了照样会被强杀；
-        正在收数据时它 1 秒内就自己退出，不会真等这么久"""
-        return CANCEL_GRACE
+        """SIGTERM 之后最多等多久再强杀（见 CANCEL_GRACE_BACKUP / CANCEL_GRACE_RESTORE）。"""
+        return CANCEL_GRACE_RESTORE if self.kind == "RESTORE" else CANCEL_GRACE_BACKUP
 
     async def _kill_proc(self, grace: float | None = None):
         """确保子进程退出。可重入：进程已退出或压根没起来时直接返回。"""
@@ -1236,9 +1238,8 @@ class Job:
         # 收尾时 _finish 才置 CANCELED
         self.status = "CANCELING"
         grace = self._cancel_grace()
-        if self.proc and self.proc.returncode is None:
-            self.add_log(f"正在取消：等工具通知手机结束本次备份（最多 {grace:g} 秒）。"
-                         "手机自己还要几分钟才收尾，这期间再点备份会自动等它")
+        if self.kind == "RESTORE" and self.proc and self.proc.returncode is None:
+            self.add_log(f"正在取消：等工具通知手机结束本次恢复（最多 {grace:g} 秒）")
         self.broadcast({"type": "canceling", "grace": grace})
         # 不在这里等进程退出，任务的结束由 SSE 推给页面
         self._kill_task = self._spawn_kill()
