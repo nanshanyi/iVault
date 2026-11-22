@@ -179,6 +179,32 @@ def fail_interrupted_backups(reason: str = "服务重启，任务被中断") -> 
     return cur.rowcount
 
 
+# 任务记录保留期：更早的自动清掉（含日志）。写死不做配置，README 里写明
+HISTORY_DAYS = 180
+
+
+def prune_history(days: int = HISTORY_DAYS) -> int:
+    """删掉 days 天前的任务记录，返回条数。只动数据库，不动磁盘上的备份目录。
+
+    每台设备「最近一次成功的备份」永远留着，不管多老：「有没有成功备份过」靠它判断——
+    全量还是增量、「当前可恢复」的来源列表、恢复前的检查都看这条。删掉它的话，
+    备份目录还在，界面却说没有可恢复的备份，下一次还会被当成全量。
+    已取消配对的旧手机也一样，换机时还要从它恢复。
+    正在跑的（RUNNING）不删：收尾时要按 id 回写。
+    """
+    cutoff = int(time.time()) - days * 86400
+    cur = conn().execute(
+        """DELETE FROM backups
+           WHERE COALESCE(finished_at, started_at, 0) < ?
+             AND status != 'RUNNING'
+             AND id NOT IN (SELECT MAX(id) FROM backups
+                            WHERE kind='BACKUP' AND status='COMPLETE' GROUP BY udid)""",
+        (cutoff,),
+    )
+    conn().commit()
+    return cur.rowcount
+
+
 def save_backup_log(backup_id: int, log_text: str, error: str = ""):
     """任务结束时把日志尾部与失败原因写进备份记录。
 

@@ -312,6 +312,7 @@ async def startup():
         log.warning("对账历史备份记录失败：%s", e)
     asyncio.create_task(_device_poller())
     asyncio.create_task(_battery_sampler())
+    asyncio.create_task(_history_pruner())
     asyncio.create_task(_scheduler_loop())
     # 启动行带上关键配置：单看容器日志就能知道是哪个版本、开了什么
     sched = (_schedule_text(_schedule_cfg())
@@ -441,6 +442,23 @@ async def _usb_autobackup():
             log.info("插线自动备份已触发：%s", _device_label(udid))
         except jobs.DeviceBusy:
             pass
+
+
+async def _history_pruner():
+    """任务记录保留 180 天（store.HISTORY_DAYS）：启动时清一次，之后每天一次。
+
+    独立成一个循环而不是放进定时调度器：调度器只在开了定时备份时干活，
+    清理和备不备份无关。
+    """
+    while True:
+        try:
+            n = store.prune_history()
+            if n:
+                log.info("已清理 %d 条 %d 天前的任务记录（每台设备最近一次成功的备份保留）",
+                         n, store.HISTORY_DAYS)
+        except Exception as e:  # noqa: BLE001
+            log.warning("清理历史任务记录失败：%s", e)
+        await asyncio.sleep(86400)
 
 
 async def _device_poller():
