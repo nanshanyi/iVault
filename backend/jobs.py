@@ -233,7 +233,7 @@ class Job:
         self.broadcast({"type": "log", "line": line})
 
     def _verbose(self) -> bool:
-        """日志详细度：默认精简（约 100 行/次，与备份时长无关），可切详细。"""
+        """日志详细度：默认精简（约 40 行/次，与备份时长无关），可切详细。"""
         if self._verbose_cache is None:
             try:
                 self._verbose_cache = (store.get_setting("log_verbose") or "") == "true"

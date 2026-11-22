@@ -448,7 +448,8 @@ td b{color:var(--txt);font-weight:600}
   background:var(--sw-knob);transition:.25s}
 .switch.on{background:var(--green)}
 .switch.on::after{left:21px;background:#fff}
-.seg{display:inline-flex;background:var(--seg-bg);border-radius:10px;padding:3px;gap:2px}
+.seg{display:inline-flex;background:var(--seg-bg);border-radius:10px;padding:3px;gap:2px;
+  flex-shrink:0;white-space:nowrap}   /* 左侧说明再长也不把按钮挤成「精/简」竖排 */
 .seg span{padding:6px 14px;font-size:12px;font-weight:600;color:var(--txt3);border-radius:8px;cursor:pointer;transition:.15s}
 .seg span.on{background:var(--green-dim);color:var(--green2)}
 .path-ipt{display:flex;align-items:center;gap:10px;background:var(--input-bg);border:1px solid var(--stroke);
@@ -687,7 +688,7 @@ td b{color:var(--txt);font-weight:600}
         <div id="dashDevs"></div>
       </div>
       <div class="card">
-        <b style="font-size:14.5px">最近 30 天备份日历</b>
+        <b style="font-size:14.5px">最近 15 周备份日历</b>
         <div class="heat" id="heat"></div>
         <div style="display:flex;justify-content:space-between;margin-top:14px;font-size:11px;color:var(--txt3)">
           <span id="heatFrom">—</span>
@@ -845,14 +846,14 @@ td b{color:var(--txt);font-weight:600}
           <div class="path-ipt" id="setPath">—</div></div>
         <div class="set-row"><div><div class="k">数据目录</div><div class="d">数据库与配对证书（META_LOCATION，删除会丢失配对与备份记录）</div></div>
           <div class="path-ipt" id="setMeta">—</div></div>
-        <div class="set-row"><div><div class="k">任务日志详细度</div><div class="d">精简：每次备份约 100 行（进度每变化 1% 一条，与备份时长无关）；详细：按时间留痕并带文件级输出，仅排查问题时用</div></div>
+        <div class="set-row"><div><div class="k">任务日志详细度</div><div class="d">精简：进度每涨 5% 记一行，加上开始和结束，一次备份约 40 行，与备份时长无关；详细：额外按时间留痕并带文件级输出，仅排查问题时用</div></div>
           <div class="seg" id="logMode"><span data-v="false">精简</span><span data-v="true">详细</span></div></div>
       </div>
       <div class="card" style="margin-bottom:16px">
         <b style="font-size:14.5px">安全</b>
         <div class="set-row" id="authRow" style="display:none"><div><div class="k">登录鉴权</div><div class="d" id="authDesc">已启用访问密码</div></div>
           <button class="btn" onclick="doLogout()" style="flex:none">退出登录</button></div>
-        <div class="set-row" id="authHintRow" style="display:none"><div><div class="k">登录鉴权未启用</div><div class="d">局域网内任何人都可以访问和操作恢复。在 .env 里设置 IVAULT_PASSWORD 后执行 docker compose up -d 即可启用</div></div></div>
+        <div class="set-row" id="authHintRow" style="display:none"><div><div class="k">登录鉴权未启用</div><div class="d">局域网内任何人都可以访问和操作恢复。在 .env 里设置 IVAULT_PASSWORD 后执行 docker compose up -d --no-build 即可启用</div></div></div>
       </div>
       <div class="card">
         <b style="font-size:14.5px">关于</b>
