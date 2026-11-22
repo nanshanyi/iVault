@@ -38,7 +38,9 @@ done
 WIFI_SOCKET=/var/run/usbmuxd-net
 if [ "${IVAULT_WIFI:-1}" != "0" ] && command -v netmuxd >/dev/null 2>&1; then
     rm -f "$WIFI_SOCKET"
-    RUST_LOG="${IVAULT_WIFI_LOG:-warn}" netmuxd \
+    # 心跳模块单独开 info：只在心跳失败时多一行（SleepyTime = 手机要休眠，Timeout = 心跳超时），
+    # 无线备份中途断开时靠它判断原因。正常运行时不多输出
+    RUST_LOG="${IVAULT_WIFI_LOG:-warn,netmuxd::heartbeat=info}" netmuxd \
         --socket-path "$WIFI_SOCKET" \
         --upstream-usbmuxd /var/run/usbmuxd \
         2>&1 | sed -u 's/^/[netmuxd] /' &

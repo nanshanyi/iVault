@@ -67,6 +67,12 @@ RUN set -eux; \
     make -j"$(nproc)"; make install; \
     echo "usbmuxd-stock $USBMUXD_STOCK_REV" >> /usr/local/share/build-revisions.txt
 
+# 无线备份期间让手机保持唤醒（向 assertion_agent 申请电源断言，原理见源码注释）。
+# 只依赖上面装好的 libimobiledevice，和工具链用同一个版本
+COPY tools/ivault-keepawake.c /src/ivault-keepawake.c
+RUN cc -std=c11 -Wall -Wextra -O2 -o /usr/local/bin/ivault-keepawake /src/ivault-keepawake.c \
+      $(pkg-config --cflags --libs libimobiledevice-1.0 libplist-2.0)
+
 # ---------- Stage 1.5: netmuxd（无线通道）----------
 # usbmuxd 只认 USB；Wi-Fi 备份需要靠 mDNS 发现网络上的设备。
 # netmuxd 在 shim 模式下把上面那个 usbmuxd 的 USB 设备一起代理出来，

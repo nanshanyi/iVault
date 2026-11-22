@@ -510,6 +510,11 @@ function renderDevices() {
             ' onclick="toggleEncryption(\'' + esc(d.udid) + '\')">' + (d.encrypted ? '关闭' : '开启') + '</button></div>' +
           (encNote ? '<div class="enc-hint' + (live && !busy ? '' : ' warn') + '">' + esc(encNote) + '</div>' : '') +
         '</div>' +
+        (conn === 'network' && !d.last_backup_at
+          ? '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--amber);line-height:1.75">' +
+            '还没有成功的备份：首次完整备份建议插数据线、接上电源进行。没跑完的备份不能续传，' +
+            'Wi-Fi 中途断开就要从头再来；成功一次之后再用 Wi-Fi 做增量</div>'
+          : '') +
         (live || !state.status.wifi_enabled ? '' :
           '<div style="padding:0 20px 14px;font-size:11.5px;color:var(--txt3);line-height:1.75">' +
           'Wi-Fi 没有发现这台设备：确认已在电脑端勾选「在 Wi-Fi 上与此 iPhone 同步」，' +
@@ -709,6 +714,7 @@ function onPairEvent(d) {
       (already
         ? '此前已与本机建立信任，无需重新确认，可直接开始备份。'
         : '已与 NAS 建立永久信任。配对证书已持久化保存，之后插线或同局域网 Wi-Fi 均可直接备份。') + '</p>' +
+      '<p style="font-size:12.5px;color:var(--txt3)">首次是完整备份，建议<b>保持插线、接上电源</b>跑完这一次；没跑完的备份不能续传。成功之后再用 Wi-Fi 做增量。</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center"><span class="badge g">✓ 证书持久化</span><span class="badge b">建议开启定时备份</span></div>',
       '<button class="btn" onclick="closeWizard()">完成</button><button class="btn primary" onclick="closeWizard();startBackup(\'' + esc(d.udid) + '\')">立即备份一次</button>');
     toast((already ? '设备已就绪：' : '配对成功：') + (d.name || '设备'));
@@ -846,7 +852,7 @@ function quickBackup() {
   }
   startBackup(d.udid);
 }
-async function startBackup(udid) {
+async function startBackup(udid, opts = {}) {
   if (!udid) {
     const d = state.devices.find(x => x.connection === 'usb' || x.connection === 'network' || x.online);
     if (!d) { toast('没有在线设备，请先用数据线连接'); go('devices'); return; }
@@ -856,6 +862,27 @@ async function startBackup(udid) {
      （只能重新跑一次完整备份）。这信息挂在设备卡片上容易被忽略，
      用户真正动手的地方是这里，所以在动作前问一句，并给一条开启的捷径 */
   const dev = (state.devices || []).find(x => x.udid === udid);
+  /* 还没成功过的设备走 Wi-Fi：首次是完整备份，几十 GB 要几个小时，
+     半截断开不能续传，只能从头再来（真机两次都断在半路）。动手前问一句 */
+  if (dev && !dev.last_backup_at && dev.connection === 'network' && !opts.wifiOk) {
+    openDlg({
+      title: '首次完整备份建议插数据线',
+      okText: '仍用 Wi-Fi 备份',
+      body:
+        '<ul class="dlg-note">' +
+          '<li>「' + esc(dev.name || '这台设备') + '」还没有成功的备份，这次要传整机数据，Wi-Fi 下常要几个小时</li>' +
+          '<li>没跑完的备份<b>不能续传</b>：中途断开就要从头再来</li>' +
+          '<li>插上数据线、接上电源跑完这一次，之后 Wi-Fi 只传变化的部分，几分钟就够</li>' +
+        '</ul>'
+    }, () => {
+      /* 下一步可能还要弹「未加密」确认：先关掉这个，等 dlgSubmit 收完尾再走，
+         否则 dlgSubmit 会把新弹出来的那个当成自己一起关掉 */
+      closeDlg();
+      setTimeout(() => startBackup(udid, { wifiOk: true }), 0);
+      return false;
+    });
+    return;
+  }
   if (dev && !dev.encrypted) {
     openDlg({
       title: '「' + (dev.name || '这台设备') + '」还没开启备份加密',

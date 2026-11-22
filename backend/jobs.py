@@ -111,6 +111,11 @@ STALL_PREFIX = "传输中断"
 # 报错前多久还在收发数据算「突然断开」；超过这个就是「先卡住、后断开」
 SUDDEN_GAP = 60
 
+# 无线任务的防休眠断言（tools/ivault-keepawake.c）：断言 15 分钟到期，每 5 分钟续一次，
+# 续期失败一两次也还在有效期内。到期由手机自己释放，工具或后端崩了手机也不会一直醒着
+KEEPAWAKE_TIMEOUT = 900
+KEEPAWAKE_RENEW = 300
+
 # ---------- 错误码翻译 ----------
 # 码值取自 Dockerfile 锁定的 libimobiledevice（LIBIMD_REF）：
 #   include/libimobiledevice/mobilebackup2.h 的 mobilebackup2_error_t
@@ -143,6 +148,19 @@ LOCKDOWN_ERRORS = {
     -31: "配对记录无效，需要重新插线配对",
     -35: "手机重启后还没解锁过，请先解锁一次再试",
 }
+_VERSION_MISMATCH = "工具和这台 iPhone 的备份协议版本不兼容，可能是 iOS 太新，需要更新 iVault"
+
+
+def _version_exchange_text(m: "re.Match") -> str:
+    code = int(m.group(1))
+    if code in (-6, -8):
+        return _VERSION_MISMATCH
+    if code == -1:
+        return ("没连上手机的备份服务（服务已启动，但连接没建立起来）。解锁手机、等一两分钟再试；"
+                "Wi-Fi 下反复出现就插数据线，还不行重启 iPhone")
+    return MB2_ERRORS.get(code, f"和手机的备份服务握手失败（错误码 {code}）")
+
+
 # (匹配规则, 文案或按匹配结果生成文案的函数)
 _ERROR_RULES = [
     (re.compile(r"Could not receive from mobilebackup2 \((-?\d+)\)"),
@@ -157,8 +175,14 @@ _ERROR_RULES = [
      lambda m: f"手机没有启动备份服务（{m.group(1).strip()}），请解锁 iPhone 后再试"),
     (re.compile(r"device refused to start the (?:backup|restore) process"),
      "手机拒绝开始，请解锁 iPhone 后再试"),
-    (re.compile(r"protocol version mismatch|Could not perform backup protocol version exchange"),
-     "工具和这台 iPhone 的备份协议对不上，可能是 iOS 太新，需要更新 iVault"),
+    # 这一句要按错误码分：idevicebackup2 不检查 mobilebackup2_client_new 的返回值，
+    # 连不上备份服务时客户端是 NULL，version_exchange 第一行就返回 -1（INVALID_ARG）。
+    # 所以 -1 是「端口开了但没连上」，只有 -6 / -8 才是真的版本不兼容。
+    # 真机（Wi-Fi）：强杀一个等密码的备份后 2 秒重试拿到 -1，3 分半后再试还是 -1，
+    # 所以不能断言是「上一个会话没释放」，原因还没确认
+    (re.compile(r"Could not perform backup protocol version exchange, error code (-?\d+)"),
+     _version_exchange_text),
+    (re.compile(r"protocol version mismatch"), _VERSION_MISMATCH),
     (re.compile(r"could not lock file|timeout while locking for sync"),
      "手机正被别的程序同步（Finder、爱思助手等），请先关掉它们"),
     (re.compile(r"Error opening '[^']*' for writing: (.+)$", re.M),
@@ -295,6 +319,7 @@ class Job:
         self._last_data_ts = 0.0              # 最后一次真正收发数据的时间
         self._first_err_ts = 0.0              # 最后一次收发数据之后第一条报错的时间
         self._offline_at: float | None = None  # 任务进行中设备从列表里消失的时间
+        self._awake_proc: asyncio.subprocess.Process | None = None   # 防休眠工具
 
     # ----- 事件广播 -----
 
@@ -408,6 +433,9 @@ class Job:
             why.append("手机没接电源")
         if not why:
             return ""
+        if self.backup_type == "FULL":
+            return ("提示：" + "，".join(why) + "。首次完整备份建议插数据线、接上电源进行："
+                    "没跑完的备份不能续传，Wi-Fi 中途断开就要从头再来；成功一次之后，Wi-Fi 只传变化的部分")
         return "提示：" + "，".join(why) + "。Wi-Fi 下长时间传输容易中途断开，建议插数据线、接上电源"
 
     def note_transport(self, before: str | None, after: str | None, why: str = ""):
@@ -436,9 +464,61 @@ class Job:
         if not why:
             return f"{os.path.basename(config.BIN_IDEVICEBACKUP2)} 退出码 {rc}，没能识别具体原因，请查看本条任务日志"
         if why.startswith(_LINK_LOST):
-            why += ("。Wi-Fi 下长时间传输容易断，建议插数据线、接上电源后重试" if self._via_wifi
-                    else "。检查数据线是否松动，或换一个 USB 口再试")
+            if not self._via_wifi:
+                why += "。检查数据线是否松动，或换一个 USB 口再试"
+            elif self.backup_type == "FULL":
+                why += "。首次完整备份请插数据线、接上电源进行，成功一次之后再用 Wi-Fi 做增量"
+            else:
+                why += "。Wi-Fi 下长时间传输容易断，建议插数据线、接上电源后重试"
         return why
+
+    async def _keep_awake(self):
+        """无线任务期间让手机保持唤醒，任务结束时被取消。
+
+        断开的机制：netmuxd 给无线设备挂着心跳，手机要休眠（发 SleepyTime）或心跳超时，
+        netmuxd 就摘掉设备、切断它上面所有连接，备份那条也在内，工具报 -4。
+        向手机的 assertion_agent 申请电源断言能挡住休眠这一条，挡不住路由器、Wi-Fi 本身断线。
+        工具起不来、申请失败都只记日志，不影响备份本身
+        """
+        args = [config.BIN_KEEPAWAKE, "-u", self.udid, "-n",
+                "-t", str(KEEPAWAKE_TIMEOUT), "-r", str(KEEPAWAKE_RENEW)]
+        try:
+            self._awake_proc = await asyncio.create_subprocess_exec(
+                *args, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        except FileNotFoundError:
+            log.info("任务 %s：没有 %s，跳过防休眠", self.tag(), args[0])
+            return
+        proc = self._awake_proc
+        acquired, fails = False, 0
+        try:
+            assert proc.stdout
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").strip()
+                if line.startswith("ACQUIRED"):
+                    acquired, fails = True, 0
+                    self.add_log("已让手机在无线传输期间保持唤醒（防止休眠断开，每 5 分钟续一次）")
+                elif line.startswith("RENEWED"):
+                    fails = 0
+                elif line.startswith("FAILED"):
+                    fails += 1
+                    # 只记第一次：之后每分钟一次的重试不刷日志
+                    if fails == 1:
+                        verb = "续期" if acquired else "申请"
+                        self.add_log(f"防休眠{verb}失败（{line}），会继续重试；备份照常进行")
+                    log.info("任务 %s 防休眠：%s", self.tag(), line)
+        finally:
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except ProcessLookupError:
+                    pass
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
 
     async def _log_end_state(self):
         """失败收尾前留两条线索：断开前还有没有数据在走、结束时的电量。
@@ -631,6 +711,11 @@ class Job:
             return
 
         self.add_log(line)
+        # 工具只看目录里有没有 Info.plist 就说增量（源码里 is_full_backup 只由它决定），
+        # 半截备份也有这个文件。手机靠上一份完整备份的清单决定传哪些文件，没有就全部重传
+        if line.startswith("Incremental backup mode") and self.backup_type == "FULL":
+            self.add_log("说明：上面这句是工具按目录里有没有 Info.plist 判断的，不代表能续传。"
+                         "还没有成功过的备份，手机这次会全部重新传")
 
     async def _heartbeat(self):
         """长时间没有任何输出时补一条心跳，避免日志看起来像卡死。
@@ -874,6 +959,19 @@ class Job:
         if self._cancel_requested:
             # 还没起进程就被取消：连备份记录都不该开始写
             return -1
+        # 无线任务和工具并行申请防休眠：申请要几秒，不能让备份等它
+        awake = asyncio.create_task(self._keep_awake()) if self._via_wifi else None
+        try:
+            return await self._pump_proc(args)
+        finally:
+            if awake is not None:
+                awake.cancel()
+                try:
+                    await awake
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001  收尾不能把任务结果盖掉
+                    pass
+
+    async def _pump_proc(self, args: list[str]) -> int:
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 *args,

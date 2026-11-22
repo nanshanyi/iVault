@@ -193,7 +193,7 @@ def start_netmuxd():
         os.unlink(WIFI_SOCKET)
     except OSError:
         pass
-    env = dict(os.environ, RUST_LOG=os.environ.get("IVAULT_WIFI_LOG", "warn"))
+    env = dict(os.environ, RUST_LOG=os.environ.get("IVAULT_WIFI_LOG", "warn,netmuxd::heartbeat=info"))
     # netmuxd 自己也读 USBMUXD_SOCKET_ADDRESS 当上游地址（src/add_device.rs）。
     # 本进程继承的是 "UNIX:<netmuxd 自己的 socket>"，不剔除会让它把上游指向
     # 自己，形成自环 —— 表现为 netmuxd 活着、USB 列表也拿不到。上游一律由

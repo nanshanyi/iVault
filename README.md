@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://github.com/nanshanyi/iVault/releases"><img src="https://img.shields.io/github/v/release/nanshanyi/iVault?style=flat-square&amp;color=00c47f" alt="release"></a>
   <a href="https://github.com/nanshanyi/iVault/actions/workflows/release.yml"><img src="https://github.com/nanshanyi/iVault/actions/workflows/release.yml/badge.svg" alt="build"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-00c47f?style=flat-square" alt="license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-00c47f?style=flat-square" alt="license"></a>
   <img src="https://img.shields.io/github/last-commit/nanshanyi/iVault?style=flat-square" alt="last commit">
 </p>
 
@@ -62,7 +62,7 @@
 | 备份加密 | 在设备卡片上开启/关闭 iPhone 的备份加密；恢复加密备份时输入密码，密码不保存在 NAS 上 |
 | 定时备份 | 每天 / 每周几 / 每月几号自选时刻；到点后会推送提醒，**每次都要在 iPhone 上输一次锁屏密码**（iOS 系统要求） |
 | 插线自动备份 | 开启后，在备份日（和定时备份共用频率）把 iPhone 插到 NAS 的 USB 口、当天还没备份过就自动开始（默认关；同样要输锁屏密码） |
-| Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文） |
+| Wi-Fi 无线备份 | netmuxd shim 模式，默认部署即可用（host 网络，见下文）；传输期间让手机保持唤醒，减少休眠断开 |
 | 访问密码 | `IVAULT_PASSWORD` 启用登录鉴权，HttpOnly Cookie 会话，SSE 同套保护 |
 | Webhook 通知 | 每次任务结束推送结果，失败带原因；定时备份等锁屏密码时另推一条提醒；支持 Bark 与企业微信 / 飞书 / 钉钉群机器人 |
 | 设备状态 | 卡片显示连接方式、电量与充电状态；电量过低且未接电源时拒绝开始备份 |
@@ -152,6 +152,8 @@ docker compose up -d --no-build
 
 打开 `http://<NAS-IP>:8666`（端口由 `IVAULT_PORT` 决定，默认 8666）→ 用数据线把 iPhone 插到 **NAS 机身**的 USB 口（不是电脑）→ 设备管理 → 添加设备 → 手机上点「信任」→ 立即备份。
 
+> 第一次是完整备份，整机数据要传几十 GB，请**保持插线、接上电源**跑完。没跑完的备份不能续传，中途断开就要从头再来；成功一次之后，再用 Wi-Fi 做增量。
+>
 > 进度到 100% 后别急着拔线，后端还要把备份写完才算落盘，以页面上的任务状态为准。
 
 ### 在 NAS 的 Docker 图形界面里部署
@@ -195,6 +197,10 @@ docker compose up -d --no-build
 1. 手机与 NAS 在同一局域网（mDNS 组播可达，跨 VLAN 通常不行）
 2. iOS 侧已开启「通过 Wi-Fi 同步」——首次只能在**能识别这台手机的电脑**上用 Finder 或 Apple Devices 勾选，NAS 无法代劳
 
+**首次完整备份请走 USB。** 无线适合日常增量：成功备份过一次之后，每次只传变化的部分，几分钟就够。首次完整备份在 Wi-Fi 上要几个小时，真机上两次都断在半路（手机没接电源），而没跑完的备份不能续传。
+
+无线传输期间，iVault 会向手机申请「无线同步中、保持唤醒」的电源断言（和电脑端无线同步用的是同一类），减少手机休眠导致的断开。它挡不住 Wi-Fi 本身断线，所以无线备份时仍建议接上电源。
+
 默认用 `network_mode: host`：mDNS 靠局域网组播发现设备，bridge 的独立 netns 收不到，所以无线必须 host。代价是 ports 映射失效，Web 端口直接由 `IVAULT_PORT` 决定（默认 8666）。
 
 不想要 host（端口冲突、或在 Docker Desktop 上跑）就用纯 USB 版：
@@ -236,7 +242,7 @@ docker compose -f docker-compose.usb.yml up -d --no-build
 | `IVAULT_OS_NAME` | 空 | 界面左下角显示的系统名，如 `DSM 7.2`；留空则自动探测，探测不到就隐藏 |
 | `IVAULT_LOG` | `INFO` | 日志级别 |
 | `IVAULT_USBMUXD_VERBOSE` | `0` | `1` 时 usbmuxd 输出详细日志（排查 USB 识别问题用） |
-| `IVAULT_WIFI_LOG` | `warn` | netmuxd 的日志级别（`RUST_LOG` 语法，如 `info`、`debug`） |
+| `IVAULT_WIFI_LOG` | `warn,netmuxd::heartbeat=info` | netmuxd 的日志级别（`RUST_LOG` 语法，如 `info`、`debug`）。默认只多记心跳失败，无线断开时看原因用 |
 | `IVAULT_USB_DIAG` | `0` | `1` 时 USB 看护启动后做一次自检，把它看到的设备与 socket 状态打进日志 |
 | `IVAULT_BUILD` | — | 仅 `install.sh` 读取：设为 `1` 时本地编译；手动部署等价于 `docker compose up -d --build` |
 
@@ -290,7 +296,7 @@ docker compose up -d --no-build     # 重建容器生效
 
 1. **备份是单目录覆盖模式，没有快照机制**：`idevicebackup2` 始终更新同一个 `<UDID>/` 目录，新备份覆写旧状态，磁盘上只有「最新一次可恢复状态」，不能回滚到历史时间点。「备份任务」页的任务历史记录每一次任务（含失败与取消），删记录不会释放空间。中途失败的增量备份可能让这份唯一状态处于不一致，需重新跑一次成功备份修复。
 2. **未加密备份不含钥匙串密码、Wi-Fi 设置、健康数据、通话记录**。需要这些请在设备卡片上开启备份加密并牢记密码——密码不会写到 NAS 上，忘记密码就无法恢复加密备份，只能在手机上「还原所有设置」清除它。换机前尤其建议开启。
-3. **无线备份的两个硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次。
+3. **无线备份的硬边界**：首次配对必须插线（iPhone 不支持无线配对，这是 `idevicepair` 的限制）；iOS 侧的「通过 Wi-Fi 同步」只能由电脑端打开一次；首次完整备份建议插线，中途断开不能续传。
 4. **平台差异只在 Docker 外壳**：需要 `privileged` 与 `/dev/bus/usb`——且必须用 `volumes:` 做 bind mount，写 `devices:` 会让热插拔失效（见[排查文档](docs/troubleshooting.md#插上-iphone-却一直显示离线)）。若系统策略禁止 privileged，可改装宿主机 `usbmuxd` 并把 socket 挂进容器。
 5. **验证状态**：配对链路已在真机验证（iPhone Xs / iOS 18.7.12，绿联 DXP4800 / UGOS 1.21），含「未弹窗需拔插线」的排障路径；容器 USB 透传与热插拔看护已在 DXP4800 + iPhone 15 / iOS 27.3 实测（拔线重插后约 1 秒自动恢复在线）；无线通道的命令层已在 macOS 实测（`-n` 发现、探活、失效条目过滤），容器内 mDNS 发现（`[netmuxd] Adding network device`）也已实测。没验证的部分见顶部提示；其他 NAS 平台也未实机测试。
 
@@ -298,12 +304,14 @@ docker compose up -d --no-build     # 重建容器生效
 
 设计与构建参考了这些开源实现（借鉴思路与构建顺序，未复制应用代码）：
 
-- [razeencheng/iosbackup](https://github.com/razeencheng/iosbackup) — Go 实现，定时 / Wi-Fi / 通知
+- [razeencheng/iosbackup](https://github.com/razeencheng/iosbackup) — Go 实现，定时 / Wi-Fi / 通知；无线备份期间申请电源断言、防止手机休眠的思路来自它，iVault 按协议独立实现（`tools/ivault-keepawake.c`）
 - [JerryGHT04/ios-backup-station](https://github.com/JerryGHT04/ios-backup-station) — 飞牛 fnOS 社区项目；本项目的源码编译顺序与 `usbmuxd --config-dir` 用法参考其 Stage 1
 - [libimobiledevice](https://libimobiledevice.org/) — iOS 协议开源实现，本项目的备份能力来源
 
 ## 许可证
 
-[MIT](LICENSE) © nanshanyi
+[GNU AGPL-3.0](LICENSE) © nanshanyi
+
+AGPL 要求：修改后通过网络向他人提供服务时，也要向这些用户提供修改后的源码。
 
 个人自用项目，代码公开只是因为可能对别人也有用。按需维护，不承诺响应时间，也不提供技术支持。正式使用前请自行评估风险——尤其是恢复功能，会覆盖设备上的现有数据。

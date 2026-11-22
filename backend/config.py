@@ -83,6 +83,8 @@ BIN_IDEVICE_INFO = os.environ.get("BIN_IDEVICE_INFO", "ideviceinfo")
 BIN_IDEVICEPAIR = os.environ.get("BIN_IDEVICEPAIR", "idevicepair")
 BIN_IDEVICEBACKUP2 = os.environ.get("BIN_IDEVICEBACKUP2", "idevicebackup2")
 BIN_NETMUXD = os.environ.get("BIN_NETMUXD", "/usr/local/bin/netmuxd")
+# 无线任务期间让手机保持唤醒（tools/ivault-keepawake.c）。不存在时跳过，不影响备份
+BIN_KEEPAWAKE = os.environ.get("BIN_KEEPAWAKE", "ivault-keepawake")
 
 import logging
 
